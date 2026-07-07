@@ -1,0 +1,13 @@
+{
+  "name": "agente-holmes",
+  "version": "1.0.0",
+  "description": "Agente de investigação jurídica com IA — Claude investigador + DeepSeek revisora cega",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

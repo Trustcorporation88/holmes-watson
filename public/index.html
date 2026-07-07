@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agente Holmes — Investigação Jurídica com IA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;0,700;1,500&family=Spectral:ital,wght@0,300;0,400;0,500;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --mogno:#141109;
+  --mogno-2:#1d1810;
+  --papel:#EFE6D2;
+  --papel-2:#E6DAC0;
+  --latao:#C2A14D;
+  --latao-claro:#DCC078;
+  --lacre:#8C3330;
+  --tinta:#241F15;
+  --tinta-suave:#5A5240;
+  --creme-suave:#CBBFA3;
+  --serif-display:'Cormorant Garamond', Georgia, 'Times New Roman', serif;
+  --serif-body:'Spectral', Georgia, serif;
+  --mono:'IBM Plex Mono', 'Courier New', monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion: reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}
+}
+body{
+  background:var(--mogno);
+  color:var(--creme-suave);
+  font-family:var(--serif-body);
+  font-weight:300;
+  line-height:1.65;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(194,161,77,.07), transparent),
+    repeating-linear-gradient(90deg, transparent 0 120px, rgba(255,255,255,.006) 120px 121px);
+}
+a{color:var(--latao-claro)}
+:focus-visible{outline:2px solid var(--latao);outline-offset:3px}
+
+/* ---------- Barra superior ---------- */
+.topo{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:20px 5vw;border-bottom:1px solid rgba(194,161,77,.22);
+  position:sticky;top:0;background:rgba(20,17,9,.92);backdrop-filter:blur(6px);z-index:50;
+}
+.marca{font-family:var(--serif-display);font-weight:700;font-size:1.35rem;letter-spacing:.14em;color:var(--papel);text-decoration:none}
+.marca .h{color:var(--latao)}
+.nav{display:flex;gap:28px}
+.nav a{font-family:var(--mono);font-size:.72rem;letter-spacing:.12em;text-transform:uppercase;text-decoration:none;color:var(--creme-suave);transition:color .2s}
+.nav a:hover{color:var(--latao-claro)}
+@media (max-width:720px){.nav{display:none}}
+
+/* ---------- Herói ---------- */
+.heroi{
+  display:grid;grid-template-columns:1.1fr .9fr;gap:6vw;align-items:center;
+  padding:9vh 5vw 10vh;max-width:1280px;margin:0 auto;
+}
+@media (max-width:900px){.heroi{grid-template-columns:1fr;gap:48px}}
+.selo-caso{
+  display:inline-flex;align-items:center;gap:10px;
+  font-family:var(--mono);font-size:.7rem;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--latao);border:1px solid rgba(194,161,77,.4);padding:7px 14px;border-radius:2px;margin-bottom:26px;
+}
+.selo-caso::before{content:'';width:7px;height:7px;border-radius:50%;background:var(--lacre);box-shadow:0 0 8px rgba(140,51,48,.8)}
+h1{
+  font-family:var(--serif-display);font-weight:600;color:var(--papel);
+  font-size:clamp(2.6rem,5.4vw,4.6rem);line-height:1.04;letter-spacing:.01em;
+}
+h1 em{font-style:italic;color:var(--latao-claro)}
+.tese{margin:26px 0 36px;font-size:1.12rem;max-width:34rem;color:var(--creme-suave)}
+.acoes{display:flex;gap:16px;flex-wrap:wrap}
+.btn{
+  font-family:var(--mono);font-size:.78rem;letter-spacing:.1em;text-transform:uppercase;
+  padding:15px 26px;text-decoration:none;border-radius:2px;transition:all .2s;cursor:pointer;border:1px solid transparent;
+}
+.btn-lacre{background:var(--lacre);color:var(--papel)}
+.btn-lacre:hover{background:#a03e3a;transform:translateY(-1px)}
+.btn-vazado{border-color:rgba(194,161,77,.5);color:var(--latao-claro)}
+.btn-vazado:hover{border-color:var(--latao);background:rgba(194,161,77,.06)}
+
+/* Dossiê do herói */
+.dossie{
+  background:var(--papel);color:var(--tinta);border-radius:3px;
+  padding:34px 32px 28px;position:relative;
+  box-shadow:14px 14px 0 rgba(0,0,0,.35), 0 0 0 1px rgba(0,0,0,.4);
+  transform:rotate(.6deg);
+}
+.dossie::before{
+  content:'CONFIDENCIAL';position:absolute;top:16px;right:-8px;
+  font-family:var(--mono);font-size:.62rem;letter-spacing:.3em;color:var(--papel);
+  background:var(--lacre);padding:5px 14px;transform:rotate(3deg);
+}
+.dossie h2{font-family:var(--mono);font-size:.7rem;letter-spacing:.2em;text-transform:uppercase;color:var(--tinta-suave);border-bottom:1px solid rgba(36,31,21,.25);padding-bottom:10px;margin-bottom:20px;font-weight:500}
+.deducao{list-style:none}
+.deducao li{
+  font-family:var(--serif-body);font-size:.98rem;padding:11px 0 11px 34px;position:relative;
+  border-bottom:1px dashed rgba(36,31,21,.18);opacity:0;animation:surgir .5s ease forwards;
+}
+.deducao li:nth-child(1){animation-delay:.3s}
+.deducao li:nth-child(2){animation-delay:.9s}
+.deducao li:nth-child(3){animation-delay:1.5s}
+.deducao li:nth-child(4){animation-delay:2.1s}
+.deducao li:last-child{border-bottom:none;font-weight:500;font-style:italic}
+.deducao li::before{
+  content:attr(data-passo);position:absolute;left:0;top:12px;
+  font-family:var(--mono);font-size:.66rem;color:var(--lacre);font-weight:500;
+}
+@keyframes surgir{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
+
+/* ---------- Seções ---------- */
+section{padding:9vh 5vw;max-width:1280px;margin:0 auto}
+.cabecalho-secao{margin-bottom:56px;max-width:44rem}
+.rotulo{font-family:var(--mono);font-size:.7rem;letter-spacing:.22em;text-transform:uppercase;color:var(--latao);display:block;margin-bottom:14px}
+.cabecalho-secao h2{font-family:var(--serif-display);font-weight:600;font-size:clamp(1.8rem,3.4vw,2.7rem);color:var(--papel);line-height:1.15}
+.cabecalho-secao p{margin-top:16px;color:var(--creme-suave)}
+
+/* Especialidades — gavetas de arquivo */
+.gavetas{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:2px;background:rgba(194,161,77,.25)}
+.gaveta{
+  background:var(--mogno-2);padding:30px 26px;transition:background .25s;position:relative;overflow:hidden;
+}
+.gaveta:hover{background:#26200f}
+.gaveta::after{
+  content:'';position:absolute;top:26px;right:24px;width:34px;height:9px;
+  border:1px solid rgba(194,161,77,.55);border-radius:5px;
+}
+.gaveta h3{font-family:var(--serif-display);font-weight:600;font-size:1.3rem;color:var(--papel);margin-bottom:12px}
+.gaveta p{font-size:.92rem;color:var(--creme-suave)}
+.gaveta .ficha{font-family:var(--mono);font-size:.64rem;letter-spacing:.16em;color:var(--latao);text-transform:uppercase;display:block;margin-bottom:14px}
+
+/* Módulos — lista de casos */
+.casos{border-top:1px solid rgba(194,161,77,.25)}
+.caso{
+  display:grid;grid-template-columns:110px 1fr auto;gap:28px;align-items:baseline;
+  padding:30px 8px;border-bottom:1px solid rgba(194,161,77,.25);transition:background .2s;
+}
+.caso:hover{background:rgba(194,161,77,.04)}
+@media (max-width:720px){.caso{grid-template-columns:1fr;gap:8px}}
+.caso .num{font-family:var(--mono);font-size:.8rem;color:var(--lacre);letter-spacing:.1em}
+.caso h3{font-family:var(--serif-display);font-weight:600;font-size:1.35rem;color:var(--papel);margin-bottom:6px}
+.caso p{font-size:.94rem;max-width:46rem}
+.caso .estado{font-family:var(--mono);font-size:.64rem;letter-spacing:.16em;text-transform:uppercase;color:var(--latao);border:1px solid rgba(194,161,77,.4);padding:5px 12px;border-radius:2px;white-space:nowrap}
+
+/* Método — linha do tempo */
+.metodo{display:grid;grid-template-columns:1fr;gap:0;max-width:820px}
+.etapa{display:grid;grid-template-columns:64px 1fr;gap:24px;padding:24px 0;position:relative}
+.etapa::before{content:'';position:absolute;left:31px;top:0;bottom:0;width:1px;background:rgba(194,161,77,.3)}
+.etapa:first-child::before{top:34px}
+.etapa:last-child::before{bottom:auto;height:34px}
+.etapa .marco{
+  width:64px;height:64px;border-radius:50%;border:1px solid var(--latao);
+  display:flex;align-items:center;justify-content:center;background:var(--mogno);
+  font-family:var(--serif-display);font-weight:700;font-size:1.5rem;color:var(--latao-claro);z-index:1;
+}
+.etapa h3{font-family:var(--serif-display);font-weight:600;font-size:1.25rem;color:var(--papel);margin-bottom:4px;padding-top:10px}
+.etapa p{font-size:.93rem}
+
+/* ---------- Sala de Investigação (chat) ---------- */
+.sala{background:linear-gradient(180deg, rgba(194,161,77,.05), transparent);border-top:1px solid rgba(194,161,77,.25);border-bottom:1px solid rgba(194,161,77,.25);max-width:none}
+.sala-interna{max-width:900px;margin:0 auto}
+.mesa{
+  background:var(--papel);border-radius:3px;overflow:hidden;
+  box-shadow:16px 16px 0 rgba(0,0,0,.35), 0 0 0 1px rgba(0,0,0,.4);
+}
+.mesa-topo{
+  background:var(--tinta);padding:14px 22px;display:flex;align-items:center;gap:12px;
+}
+.mesa-topo .luz{width:9px;height:9px;border-radius:50%;background:var(--lacre)}
+.mesa-topo .luz.acesa{background:#6f8f5a;box-shadow:0 0 6px rgba(111,143,90,.9)}
+.mesa-topo span{font-family:var(--mono);font-size:.68rem;letter-spacing:.18em;text-transform:uppercase;color:var(--papel-2)}
+.transcricao{
+  height:440px;overflow-y:auto;padding:28px 26px;color:var(--tinta);
+  background:
+    repeating-linear-gradient(transparent 0 27px, rgba(140,51,48,.05) 27px 28px);
+}
+.fala{margin-bottom:22px;max-width:88%}
+.fala .autor{font-family:var(--mono);font-size:.62rem;letter-spacing:.2em;text-transform:uppercase;color:var(--lacre);display:block;margin-bottom:5px}
+.fala.holmes .autor{color:var(--tinta-suave)}
+.fala p{font-size:.96rem;line-height:1.6;white-space:pre-wrap}
+.fala.usuario{margin-left:auto;text-align:right}
+.fala.pensando p{font-style:italic;color:var(--tinta-suave)}
+.fala.pensando p::after{content:'…';animation:pulsar 1.2s infinite}
+@keyframes pulsar{0%,100%{opacity:.3}50%{opacity:1}}
+.entrada{
+  display:flex;gap:0;border-top:1px solid rgba(36,31,21,.25);background:var(--papel-2);
+}
+.entrada textarea{
+  flex:1;border:none;background:transparent;padding:18px 22px;resize:none;
+  font-family:var(--serif-body);font-size:.98rem;color:var(--tinta);height:64px;
+}
+.entrada textarea:focus{outline:none;background:rgba(255,255,255,.35)}
+.entrada button{
+  border:none;background:var(--lacre);color:var(--papel);cursor:pointer;
+  font-family:var(--mono);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;padding:0 30px;transition:background .2s;
+}
+.entrada button:hover:not(:disabled){background:#a03e3a}
+.entrada button:disabled{background:var(--tinta-suave);cursor:wait}
+.sugestoes{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px;justify-content:center}
+.sugestoes button{
+  font-family:var(--mono);font-size:.68rem;letter-spacing:.08em;color:var(--creme-suave);
+  background:transparent;border:1px solid rgba(194,161,77,.35);border-radius:2px;
+  padding:9px 16px;cursor:pointer;transition:all .2s;
+}
+.sugestoes button:hover{border-color:var(--latao);color:var(--latao-claro)}
+
+/* ---------- Rodapé ---------- */
+footer{border-top:1px solid rgba(194,161,77,.22);padding:44px 5vw;max-width:1280px;margin:0 auto}
+footer .aviso{font-size:.82rem;color:var(--tinta-suave);color:#8d8570;max-width:52rem;line-height:1.7}
+footer .assin{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text-transform:uppercase;color:var(--latao);margin-top:22px}
+.contra-check{
+  display:inline-block;margin-top:10px;font-family:var(--mono);font-size:.62rem;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--lacre);
+  background:transparent;border:1px solid rgba(140,51,48,.5);border-radius:2px;
+  padding:6px 12px;cursor:pointer;transition:all .2s;
+}
+.contra-check:hover:not(:disabled){background:rgba(140,51,48,.08);border-color:var(--lacre)}
+.contra-check:disabled{opacity:.5;cursor:wait}
+.fala.watson{border-left:2px solid var(--lacre);padding-left:14px}
+.fala.watson .autor{color:var(--lacre)}
+</style>
+</head>
+<body>
+
+<header class="topo">
+  <a class="marca" href="#">AGENTE <span class="h">HOLMES</span></a>
+  <nav class="nav" aria-label="Navegação principal">
+    <a href="#especialidades">Especialidades</a>
+    <a href="#modulos">Módulos</a>
+    <a href="#metodo">Método</a>
+    <a href="#sala">Sala de Investigação</a>
+  </nav>
+</header>
+
+<main>
+<section class="heroi">
+  <div>
+    <span class="selo-caso">Dossiê aberto · Direito brasileiro</span>
+    <h1>Todo processo esconde <em>evidências.</em><br>Holmes as encontra.</h1>
+    <p class="tese">Agente de investigação jurídica em Tributário, Sucessório, Civil e Trabalhista. Método de grande escritório: fatos separados de alegações, teses testadas contra o adversário, risco sempre quantificado — e nenhum precedente inventado.</p>
+    <div class="acoes">
+      <a class="btn btn-lacre" href="#sala">Abrir uma investigação</a>
+      <a class="btn btn-vazado" href="#metodo">Conhecer o método</a>
+    </div>
+  </div>
+  <aside class="dossie" aria-label="Exemplo de cadeia de dedução">
+    <h2>Caso nº 0001 — Cadeia de dedução</h2>
+    <ol class="deducao">
+      <li data-passo="FATO">Notificação recebida em 12/03; contrato prevê prazo de cura de 30 dias.</li>
+      <li data-passo="NORMA">Mora ex persona — a resolução exige interpelação e decurso do prazo (art. 397, p.ú., CC).</li>
+      <li data-passo="PROVA">A contraparte rescindiu no 18º dia. O prazo de cura não se esgotou.</li>
+      <li data-passo="⟶">Elementar: a rescisão é prematura. A multa é inexigível.</li>
+    </ol>
+  </aside>
+</section>
+
+<section id="especialidades">
+  <div class="cabecalho-secao">
+    <span class="rotulo">Arquivo de especialidades</span>
+    <h2>Quatro gavetas, um investigador</h2>
+    <p>Holmes identifica sozinho a área do caso — e as interseções entre elas, onde os casos reais costumam morar.</p>
+  </div>
+  <div class="gavetas">
+    <div class="gaveta">
+      <span class="ficha">Gaveta T</span>
+      <h3>Tributário</h3>
+      <p>CARF, contencioso judicial, teses de recuperação e a Reforma Tributária (EC 132/2023, IBS/CBS) com suas regras de transição.</p>
+    </div>
+    <div class="gaveta">
+      <span class="ficha">Gaveta S</span>
+      <h3>Sucessório</h3>
+      <p>Inventário, partilha, testamentos e planejamento com holding familiar — sempre de olho no ITCMD e nos riscos de desconsideração.</p>
+    </div>
+    <div class="gaveta">
+      <span class="ficha">Gaveta C</span>
+      <h3>Civil</h3>
+      <p>Contratos, responsabilidade civil, imobiliário e consumidor. Cláusulas abusivas não escapam da lupa.</p>
+    </div>
+    <div class="gaveta">
+      <span class="ficha">Gaveta L</span>
+      <h3>Trabalhista</h3>
+      <p>Contencioso e preventivo pós-Reforma: pejotização, grupo econômico, jornada e os riscos que chegam antes da reclamatória.</p>
+    </div>
+  </div>
+</section>
+
+<section id="modulos">
+  <div class="cabecalho-secao">
+    <span class="rotulo">Fichário de casos</span>
+    <h2>Cinco módulos de investigação</h2>
+  </div>
+  <div class="casos">
+    <div class="caso">
+      <span class="num">MÓDULO A</span>
+      <div>
+        <h3>Contrato sob a lupa</h3>
+        <p>Todas as cláusulas — inclusive as que faltam. Risco em quatro níveis, redação substitutiva pronta para copiar e roteiro de negociação com moedas de troca.</p>
+      </div>
+      <span class="estado">Redline</span>
+    </div>
+    <div class="caso">
+      <span class="num">MÓDULO B</span>
+      <div>
+        <h3>Rastreamento processual</h3>
+        <p>Decodifica o número CNJ, consulta as fontes públicas do tribunal, audita nulidades e sugere a linha de defesa cabível na fase atual — separando fato confirmado de inferência.</p>
+      </div>
+      <span class="estado">Defesa</span>
+    </div>
+    <div class="caso">
+      <span class="num">MÓDULO C</span>
+      <div>
+        <h3>Red team adversarial</h3>
+        <p>Holmes vira o Moriarty do seu caso: ataca a tese, os fatos e o processo como o melhor advogado da parte contrária faria — e depois blinda os pontos que cederam.</p>
+      </div>
+      <span class="estado">Ataque</span>
+    </div>
+    <div class="caso">
+      <span class="num">MÓDULO D</span>
+      <div>
+        <h3>Simulação de audiência</h3>
+        <p>Banco de perguntas prováveis do juiz, treino interativo com feedback e roteiro de sustentação oral em três atos, com plano B para interrupções.</p>
+      </div>
+      <span class="estado">Ensaio</span>
+    </div>
+    <div class="caso">
+      <span class="num">MÓDULO E</span>
+      <div>
+        <h3>Diff jurídico</h3>
+        <p>Duas versões de contrato lado a lado, placar da negociação e caça às mudanças silenciosas: o "e" que virou "ou", o prazo corrido que virou útil.</p>
+      </div>
+      <span class="estado">Comparação</span>
+    </div>
+  </div>
+</section>
+
+<section id="metodo">
+  <div class="cabecalho-secao">
+    <span class="rotulo">O método dedutivo</span>
+    <h2>Sete etapas antes de qualquer conclusão</h2>
+    <p>A ordem importa: Holmes não teoriza antes dos fatos. "É um erro capital teorizar antes de ter os dados."</p>
+  </div>
+  <div class="metodo">
+    <div class="etapa"><div class="marco">I</div><div><h3>Qualificação do caso</h3><p>Triagem de prazos fatais em primeiro lugar — prescrição, decadência e recursos alertados no topo.</p></div></div>
+    <div class="etapa"><div class="marco">II</div><div><h3>Organização dos fatos</h3><p>Fatos comprovados separados de alegações e lacunas. Linha do tempo e mapa de provas.</p></div></div>
+    <div class="etapa"><div class="marco">III</div><div><h3>Teses jurídicas</h3><p>Silogismo explícito: norma, subsunção, conclusão — para o cliente e para o adversário.</p></div></div>
+    <div class="etapa"><div class="marco">IV</div><div><h3>Análise de risco</h3><p>Baixo, médio ou alto, com o porquê. Matriz de probabilidade × impacto fecha a conta.</p></div></div>
+    <div class="etapa"><div class="marco">V</div><div><h3>Peças e documentos</h3><p>Minutas com teses ordenadas, pedidos objetivos e o padrão de redação sem juridiquês vazio.</p></div></div>
+    <div class="etapa"><div class="marco">VI</div><div><h3>Estratégia</h3><p>Caminho principal, alternativas com trade-offs e próximos passos com prazo e responsável.</p></div></div>
+    <div class="etapa"><div class="marco">VII</div><div><h3>Controle de qualidade</h3><p>Nada sai sem checklist: precedentes conferidos, red team sobrevivido, números fechando.</p></div></div>
+  </div>
+</section>
+
+<section id="sala" class="sala">
+  <div class="sala-interna">
+    <div class="cabecalho-secao" style="text-align:center;max-width:none">
+      <span class="rotulo">221B — ao vivo</span>
+      <h2>Sala de Investigação</h2>
+      <p>Converse com o Holmes agora. Descreva um caso, cole uma cláusula ou peça um red team. Após cada análise, acione o contra-check: a Watson, revisora cega, audita a lógica sem ver o caso.</p>
+    </div>
+    <div class="mesa">
+      <div class="mesa-topo">
+        <span class="luz acesa" id="luzStatus"></span>
+        <span>Transcrição do interrogatório</span>
+      </div>
+      <div class="transcricao" id="transcricao" aria-live="polite">
+        <div class="fala holmes">
+          <span class="autor">Holmes</span>
+          <p>Boa noite. Sente-se — o caso que o trouxe aqui já está estampado na sua expressão. Conte-me os fatos em qualquer ordem; a ordem certa é trabalho meu. Posso analisar uma cláusula, montar uma linha de defesa ou atacar a sua própria tese antes que o adversário o faça.</p>
+        </div>
+      </div>
+      <div class="entrada">
+        <textarea id="campoMensagem" placeholder="Descreva o caso, cole a cláusula ou faça a pergunta..." aria-label="Sua mensagem para o Holmes"></textarea>
+        <button id="botaoEnviar" onclick="enviar()">Enviar</button>
+      </div>
+    </div>
+    <div class="sugestoes">
+      <button onclick="usarSugestao('Analise esta cláusula: a multa por rescisão será de 50% do valor total do contrato, devida apenas pela CONTRATADA.')">Cláusula suspeita</button>
+      <button onclick="usarSugestao('Faça o red team desta tese: vou pedir vínculo de emprego para um motorista de aplicativo.')">Red team de uma tese</button>
+      <button onclick="usarSugestao('Meu pai faleceu deixando uma casa, um carro e três filhos. Não há testamento. Por onde começo o inventário?')">Caso sucessório</button>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <p class="aviso">O Agente Holmes presta apoio técnico-jurídico com inteligência artificial e não substitui advogado inscrito na OAB. Peças e análises devem ser revisadas e subscritas por profissional habilitado; a jurisprudência citada deve ser conferida nas fontes oficiais antes de fundamentar peça protocolada. A estratégia final é sempre decisão do advogado responsável com o cliente.</p>
+  <p class="assin">Agente Holmes · Tributário — Sucessório — Civil — Trabalhista · MMXXVI</p>
+</footer>
+
+<script>
+const historico = [];
+let revisoraDisponivel = false;
+const transcricao = document.getElementById('transcricao');
+const campo = document.getElementById('campoMensagem');
+const botao = document.getElementById('botaoEnviar');
+const luz = document.getElementById('luzStatus');
+
+// Descobre se a revisora (contra-check) está ativa no servidor
+fetch('/api/saude').then(r => r.json()).then(s => { revisoraDisponivel = !!s.revisora; }).catch(() => {});
+
+campo.addEventListener('keydown', function(e){
+  if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); enviar(); }
+});
+
+function usarSugestao(texto){
+  campo.value = texto;
+  campo.focus();
+  document.getElementById('sala').scrollIntoView({behavior:'smooth'});
+}
+
+function adicionarFala(autor, texto, classes){
+  const div = document.createElement('div');
+  div.className = 'fala ' + classes;
+  const rot = document.createElement('span');
+  rot.className = 'autor';
+  rot.textContent = autor;
+  const p = document.createElement('p');
+  p.textContent = texto;
+  div.appendChild(rot); div.appendChild(p);
+  transcricao.appendChild(div);
+  transcricao.scrollTop = transcricao.scrollHeight;
+  return div;
+}
+
+function adicionarBotaoContraCheck(falaHolmes, textoResposta){
+  if(!revisoraDisponivel) return;
+  const b = document.createElement('button');
+  b.className = 'contra-check';
+  b.textContent = '⚖ Contra-check (revisão cega)';
+  b.onclick = () => contraCheck(b, textoResposta);
+  falaHolmes.appendChild(b);
+}
+
+async function contraCheck(botaoCC, textoResposta){
+  botaoCC.disabled = true;
+  botaoCC.textContent = 'Revisando…';
+  try{
+    const r = await fetch('/api/contracheck', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ texto: textoResposta })
+    });
+    const dados = await r.json();
+    botaoCC.remove();
+    if(dados.parecer){
+      adicionarFala('Watson — revisora cega', dados.parecer, 'holmes watson');
+    } else {
+      adicionarFala('Watson — revisora cega', dados.erro || 'Revisão indisponível no momento.', 'holmes watson');
+    }
+  } catch(e){
+    botaoCC.disabled = false;
+    botaoCC.textContent = '⚖ Contra-check (tentar novamente)';
+  }
+}
+
+async function enviar(){
+  const texto = campo.value.trim();
+  if(!texto || botao.disabled) return;
+  campo.value = '';
+  adicionarFala('Você', texto, 'usuario');
+  historico.push({role:'user', content:texto});
+
+  botao.disabled = true;
+  luz.classList.remove('acesa');
+  const pensando = adicionarFala('Holmes', 'Examinando as evidências', 'holmes pensando');
+
+  try{
+    const resposta = await fetch('/api/chat', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ messages: historico })
+    });
+    const dados = await resposta.json();
+    pensando.remove();
+    if(dados.texto){
+      const fala = adicionarFala('Holmes', dados.texto, 'holmes');
+      historico.push({role:'assistant', content:dados.texto});
+      adicionarBotaoContraCheck(fala, dados.texto);
+    } else {
+      adicionarFala('Holmes', dados.erro || 'Curioso — a linha de comunicação falhou. Reformule e tentaremos novamente.', 'holmes');
+      historico.pop();
+    }
+  } catch(erro){
+    pensando.remove();
+    adicionarFala('Holmes', 'A conexão com meus arquivos foi interrompida. Verifique a rede e envie novamente — o caso não fugirá.', 'holmes');
+    historico.pop();
+  } finally {
+    botao.disabled = false;
+    luz.classList.add('acesa');
+    campo.focus();
+  }
+}
+</script>
+</body>
+</html>
