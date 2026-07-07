@@ -222,6 +222,10 @@ footer .assin{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text
 .contra-check:disabled{opacity:.5;cursor:wait}
 .fala.watson{border-left:2px solid var(--lacre);padding-left:14px}
 .fala.watson .autor{color:var(--lacre)}
+.anexo{border:none;background:transparent;cursor:pointer;font-size:1.1rem;padding:0 6px 0 16px;align-self:center}
+.anexo:hover{transform:scale(1.15)}
+.chip-pdf{font-family:var(--mono);font-size:.66rem;letter-spacing:.08em;color:var(--tinta);background:var(--papel-2);padding:8px 22px;border-top:1px dashed rgba(36,31,21,.25)}
+.chip-pdf button{border:none;background:none;color:var(--lacre);cursor:pointer;font-family:var(--mono);margin-left:10px}
 </style>
 </head>
 <body>
@@ -373,9 +377,13 @@ footer .assin{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text
         </div>
       </div>
       <div class="entrada">
+        <input type="file" id="campoPdf" accept="application/pdf" style="display:none" onchange="anexarPdf(this)">
+        <button class="anexo" onclick="document.getElementById('campoPdf').click()" title="Anexar contrato em PDF" aria-label="Anexar PDF">📎</button>
         <textarea id="campoMensagem" placeholder="Descreva o caso, cole a cláusula ou faça a pergunta..." aria-label="Sua mensagem para o Holmes"></textarea>
         <button id="botaoEnviar" onclick="enviar()">Enviar</button>
       </div>
+      <div id="chipPdf" class="chip-pdf" style="display:none"></div>
+      <div id="turnstileArea" style="display:flex;justify-content:center;padding:8px;background:var(--papel-2)"></div>
     </div>
     <div class="sugestoes">
       <button onclick="usarSugestao('Analise esta cláusula: a multa por rescisão será de 50% do valor total do contrato, devida apenas pela CONTRATADA.')">Cláusula suspeita</button>
@@ -394,13 +402,34 @@ footer .assin{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text
 <script>
 const historico = [];
 let revisoraDisponivel = false;
+let pdfAnexado = null; // {name, data}
+let turnstileToken = null;
+let turnstileWidget = null;
 const transcricao = document.getElementById('transcricao');
 const campo = document.getElementById('campoMensagem');
 const botao = document.getElementById('botaoEnviar');
 const luz = document.getElementById('luzStatus');
 
-// Descobre se a revisora (contra-check) está ativa no servidor
-fetch('/api/saude').then(r => r.json()).then(s => { revisoraDisponivel = !!s.revisora; }).catch(() => {});
+fetch('/api/saude').then(r => r.json()).then(s => {
+  revisoraDisponivel = !!s.revisora;
+  if(!s.pdf){ document.querySelector('.anexo').style.display = 'none'; }
+  if(s.turnstileSiteKey){ carregarTurnstile(s.turnstileSiteKey); }
+}).catch(() => {});
+
+function carregarTurnstile(sitekey){
+  const sc = document.createElement('script');
+  sc.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?onload=turnstilePronto';
+  sc.async = true;
+  window.turnstilePronto = function(){
+    turnstileWidget = turnstile.render('#turnstileArea', {
+      sitekey: sitekey,
+      theme: 'light',
+      callback: function(token){ turnstileToken = token; },
+      'expired-callback': function(){ turnstileToken = null; turnstile.reset(turnstileWidget); }
+    });
+  };
+  document.head.appendChild(sc);
+}
 
 campo.addEventListener('keydown', function(e){
   if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); enviar(); }
@@ -410,6 +439,30 @@ function usarSugestao(texto){
   campo.value = texto;
   campo.focus();
   document.getElementById('sala').scrollIntoView({behavior:'smooth'});
+}
+
+function anexarPdf(input){
+  const arquivo = input.files[0];
+  if(!arquivo) return;
+  if(arquivo.size > 6 * 1024 * 1024){ alert('PDF grande demais — limite de 6MB.'); input.value=''; return; }
+  const leitor = new FileReader();
+  leitor.onload = () => {
+    pdfAnexado = { name: arquivo.name, data: leitor.result.split(',')[1] };
+    const chip = document.getElementById('chipPdf');
+    chip.style.display = 'block';
+    chip.innerHTML = '';
+    chip.append('📎 ' + arquivo.name + ' anexado ');
+    const x = document.createElement('button');
+    x.textContent = '✕ remover';
+    x.onclick = removerPdf;
+    chip.appendChild(x);
+  };
+  leitor.readAsDataURL(arquivo);
+  input.value = '';
+}
+function removerPdf(){
+  pdfAnexado = null;
+  document.getElementById('chipPdf').style.display = 'none';
 }
 
 function adicionarFala(autor, texto, classes){
@@ -446,11 +499,7 @@ async function contraCheck(botaoCC, textoResposta){
     });
     const dados = await r.json();
     botaoCC.remove();
-    if(dados.parecer){
-      adicionarFala('Watson — revisora cega', dados.parecer, 'holmes watson');
-    } else {
-      adicionarFala('Watson — revisora cega', dados.erro || 'Revisão indisponível no momento.', 'holmes watson');
-    }
+    adicionarFala('Watson — revisora cega', dados.parecer || dados.erro || 'Revisão indisponível no momento.', 'holmes watson');
   } catch(e){
     botaoCC.disabled = false;
     botaoCC.textContent = '⚖ Contra-check (tentar novamente)';
@@ -459,38 +508,62 @@ async function contraCheck(botaoCC, textoResposta){
 
 async function enviar(){
   const texto = campo.value.trim();
-  if(!texto || botao.disabled) return;
+  if((!texto && !pdfAnexado) || botao.disabled) return;
   campo.value = '';
-  adicionarFala('Você', texto, 'usuario');
-  historico.push({role:'user', content:texto});
+
+  const rotuloUsuario = pdfAnexado ? (texto || 'Analise o documento.') + '  📎 ' + pdfAnexado.name : texto;
+  adicionarFala('Você', rotuloUsuario, 'usuario');
+  historico.push({role:'user', content: texto || 'Analise o documento anexado conforme os módulos aplicáveis.'});
+
+  const pdfEnvio = pdfAnexado;
+  removerPdf();
 
   botao.disabled = true;
   luz.classList.remove('acesa');
-  const pensando = adicionarFala('Holmes', 'Examinando as evidências', 'holmes pensando');
+  const fala = adicionarFala('Holmes', '…', 'holmes');
+  const paragrafo = fala.querySelector('p');
 
   try{
     const resposta = await fetch('/api/chat', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ messages: historico })
+      body: JSON.stringify({ messages: historico, pdf: pdfEnvio, turnstileToken })
     });
-    const dados = await resposta.json();
-    pensando.remove();
-    if(dados.texto){
-      const fala = adicionarFala('Holmes', dados.texto, 'holmes');
-      historico.push({role:'assistant', content:dados.texto});
-      adicionarBotaoContraCheck(fala, dados.texto);
+
+    if(!resposta.ok){
+      const d = await resposta.json().catch(() => ({}));
+      paragrafo.textContent = d.erro || 'Curioso — a linha de comunicação falhou. Reformule e tentaremos novamente.';
+      historico.pop();
+      return;
+    }
+
+    // Streaming: o texto do Holmes surge conforme é escrito
+    paragrafo.textContent = '';
+    const leitor = resposta.body.getReader();
+    const decoder = new TextDecoder();
+    let completo = '';
+    while(true){
+      const {done, value} = await leitor.read();
+      if(done) break;
+      completo += decoder.decode(value, {stream:true});
+      paragrafo.textContent = completo;
+      transcricao.scrollTop = transcricao.scrollHeight;
+    }
+
+    if(completo.trim()){
+      historico.push({role:'assistant', content: completo});
+      adicionarBotaoContraCheck(fala, completo);
     } else {
-      adicionarFala('Holmes', dados.erro || 'Curioso — a linha de comunicação falhou. Reformule e tentaremos novamente.', 'holmes');
+      paragrafo.textContent = 'A investigação voltou vazia. Envie novamente.';
       historico.pop();
     }
   } catch(erro){
-    pensando.remove();
-    adicionarFala('Holmes', 'A conexão com meus arquivos foi interrompida. Verifique a rede e envie novamente — o caso não fugirá.', 'holmes');
+    paragrafo.textContent = 'A conexão com meus arquivos foi interrompida. Verifique a rede e envie novamente — o caso não fugirá.';
     historico.pop();
   } finally {
     botao.disabled = false;
     luz.classList.add('acesa');
+    if(turnstileWidget !== null && typeof turnstile !== 'undefined'){ turnstileToken = null; turnstile.reset(turnstileWidget); }
     campo.focus();
   }
 }

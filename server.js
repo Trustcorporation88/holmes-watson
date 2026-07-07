@@ -8,11 +8,13 @@ const express = require('express');
 const path = require('path');
 
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '12mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY; // opcional
+const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY; // opcional (anti-bot)
+const TURNSTILE_SECRET = process.env.TURNSTILE_SECRET;     // opcional (anti-bot)
 const PORT = process.env.PORT || 3000;
 
 // Limite simples de requisições por IP (proteção básica de custo)
@@ -61,15 +63,54 @@ NÃO opine sobre a veracidade de precedentes citados — apenas marque se algum 
 Responda em português do Brasil, em no máximo 200 palavras: "APROVADA SEM RESSALVAS" ou lista objetiva das falhas encontradas, cada uma em uma linha iniciada por "⚠".`;
 
 // ---------- /api/chat — Claude, o investigador ----------
+async function verificarTurnstile(token, ip) {
+  if (!TURNSTILE_SECRET) return true; // proteção desativada
+  if (!token) return false;
+  try {
+    const r = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret: TURNSTILE_SECRET, response: token, remoteip: ip })
+    });
+    const d = await r.json();
+    return d.success === true;
+  } catch { return false; }
+}
+
 app.post('/api/chat', limitar, async (req, res) => {
   try {
-    const { messages } = req.body;
+    const { messages, pdf, turnstileToken } = req.body;
     if (!Array.isArray(messages) || messages.length === 0 || messages.length > 40) {
       return res.status(400).json({ erro: 'Histórico de mensagens inválido.' });
     }
+
+    const ip = req.headers['x-forwarded-for']?.split(',')[0] || req.ip;
+    if (!(await verificarTurnstile(turnstileToken, ip))) {
+      return res.status(403).json({ erro: 'Verificação anti-robô falhou. Recarregue a página e tente de novo.' });
+    }
+
     const historico = messages.map(m => ({ role: m.role, content: String(m.content).slice(0, 20_000) }));
 
-    // Investigador preferencial: Claude (Anthropic). Fallback de teste: DeepSeek.
+    // PDF anexado: entra como bloco de documento na última mensagem do usuário
+    if (pdf && pdf.data && ANTHROPIC_KEY) {
+      if (String(pdf.data).length > 8_000_000) {
+        return res.status(400).json({ erro: 'PDF grande demais (limite ~6MB).' });
+      }
+      const ultima = historico[historico.length - 1];
+      if (ultima && ultima.role === 'user') {
+        ultima.content = [
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdf.data } },
+          { type: 'text', text: ultima.content || 'Analise o documento anexado conforme os módulos aplicáveis.' }
+        ];
+      }
+    }
+
+    // Streaming para o cliente: texto puro em chunks
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Accel-Buffering', 'no');
+
+    // ---- Investigador principal: Claude, com busca na web e cache de prompt ----
     if (ANTHROPIC_KEY) {
       const resposta = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -80,46 +121,66 @@ app.post('/api/chat', limitar, async (req, res) => {
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-6',
-          max_tokens: 1200,
-          system: PROMPT_HOLMES,
+          max_tokens: 2000,
+          stream: true,
+          system: [{ type: 'text', text: PROMPT_HOLMES, cache_control: { type: 'ephemeral' } }],
+          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
           messages: historico
         })
       });
-      const dados = await resposta.json();
+
       if (!resposta.ok) {
-        console.error('Erro Anthropic:', dados);
-        return res.status(502).json({ erro: 'O investigador está indisponível no momento.' });
+        const erro = await resposta.text();
+        console.error('Erro Anthropic:', erro.slice(0, 500));
+        return res.end('O investigador está indisponível no momento. Tente novamente em instantes.');
       }
-      const texto = (dados.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
-      return res.json({ texto });
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let avisoBusca = false;
+      for await (const chunk of resposta.body) {
+        buffer += decoder.decode(chunk, { stream: true });
+        const linhas = buffer.split('\n');
+        buffer = linhas.pop();
+        for (const linha of linhas) {
+          if (!linha.startsWith('data: ')) continue;
+          const bruto = linha.slice(6).trim();
+          if (bruto === '[DONE]') continue;
+          try {
+            const ev = JSON.parse(bruto);
+            if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
+              res.write(ev.delta.text);
+            } else if (ev.type === 'content_block_start' && ev.content_block?.type === 'server_tool_use' && !avisoBusca) {
+              avisoBusca = true;
+              res.write('🔎 [consultando fontes na web…]\n\n');
+            }
+          } catch { /* linha parcial, ignora */ }
+        }
+      }
+      return res.end();
     }
 
+    // ---- Fallback de teste: DeepSeek (sem busca web e sem PDF) ----
     if (DEEPSEEK_KEY) {
       const resposta = await fetch('https://api.deepseek.com/chat/completions', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${DEEPSEEK_KEY}`
-        },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DEEPSEEK_KEY}` },
         body: JSON.stringify({
           model: 'deepseek-chat',
           max_tokens: 1200,
           temperature: 0.4,
-          messages: [{ role: 'system', content: PROMPT_HOLMES }, ...historico]
+          messages: [{ role: 'system', content: PROMPT_HOLMES }, ...historico.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : m.content.map(c => c.text || '[documento]').join(' ') }))]
         })
       });
       const dados = await resposta.json();
-      if (!resposta.ok) {
-        console.error('Erro DeepSeek:', dados);
-        return res.status(502).json({ erro: 'O investigador está indisponível no momento.' });
-      }
-      return res.json({ texto: dados.choices?.[0]?.message?.content?.trim() || '' });
+      if (!resposta.ok) { console.error('Erro DeepSeek:', dados); return res.end('O investigador está indisponível no momento.'); }
+      return res.end(dados.choices?.[0]?.message?.content?.trim() || '');
     }
 
-    return res.status(500).json({ erro: 'Nenhuma chave de IA configurada no servidor (ANTHROPIC_API_KEY ou DEEPSEEK_API_KEY).' });
+    return res.end('Nenhuma chave de IA configurada no servidor.');
   } catch (e) {
     console.error(e);
-    res.status(500).json({ erro: 'Falha interna na investigação.' });
+    try { res.end('\n\n[A investigação foi interrompida por uma falha. Envie novamente.]'); } catch {}
   }
 });
 
@@ -172,7 +233,10 @@ app.post('/api/contracheck', limitar, async (req, res) => {
 app.get('/api/saude', (_req, res) => res.json({
   ok: true,
   investigador: ANTHROPIC_KEY ? 'claude' : (DEEPSEEK_KEY ? 'deepseek (modo de teste)' : false),
-  revisora: Boolean(ANTHROPIC_KEY && DEEPSEEK_KEY)
+  revisora: Boolean(ANTHROPIC_KEY && DEEPSEEK_KEY),
+  buscaWeb: Boolean(ANTHROPIC_KEY),
+  pdf: Boolean(ANTHROPIC_KEY),
+  turnstileSiteKey: TURNSTILE_SITE_KEY || null
 }));
 
 app.listen(PORT, () => console.log(`Agente Holmes investigando na porta ${PORT}`));
