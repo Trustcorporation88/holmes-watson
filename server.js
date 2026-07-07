@@ -63,34 +63,60 @@ Responda em português do Brasil, em no máximo 200 palavras: "APROVADA SEM RESS
 // ---------- /api/chat — Claude, o investigador ----------
 app.post('/api/chat', limitar, async (req, res) => {
   try {
-    if (!ANTHROPIC_KEY) return res.status(500).json({ erro: 'ANTHROPIC_API_KEY não configurada no servidor.' });
     const { messages } = req.body;
     if (!Array.isArray(messages) || messages.length === 0 || messages.length > 40) {
       return res.status(400).json({ erro: 'Histórico de mensagens inválido.' });
     }
+    const historico = messages.map(m => ({ role: m.role, content: String(m.content).slice(0, 20_000) }));
 
-    const resposta = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1200,
-        system: PROMPT_HOLMES,
-        messages: messages.map(m => ({ role: m.role, content: String(m.content).slice(0, 20_000) }))
-      })
-    });
-
-    const dados = await resposta.json();
-    if (!resposta.ok) {
-      console.error('Erro Anthropic:', dados);
-      return res.status(502).json({ erro: 'O investigador está indisponível no momento.' });
+    // Investigador preferencial: Claude (Anthropic). Fallback de teste: DeepSeek.
+    if (ANTHROPIC_KEY) {
+      const resposta = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': ANTHROPIC_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 1200,
+          system: PROMPT_HOLMES,
+          messages: historico
+        })
+      });
+      const dados = await resposta.json();
+      if (!resposta.ok) {
+        console.error('Erro Anthropic:', dados);
+        return res.status(502).json({ erro: 'O investigador está indisponível no momento.' });
+      }
+      const texto = (dados.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
+      return res.json({ texto });
     }
-    const texto = (dados.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
-    res.json({ texto });
+
+    if (DEEPSEEK_KEY) {
+      const resposta = await fetch('https://api.deepseek.com/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${DEEPSEEK_KEY}`
+        },
+        body: JSON.stringify({
+          model: 'deepseek-chat',
+          max_tokens: 1200,
+          temperature: 0.4,
+          messages: [{ role: 'system', content: PROMPT_HOLMES }, ...historico]
+        })
+      });
+      const dados = await resposta.json();
+      if (!resposta.ok) {
+        console.error('Erro DeepSeek:', dados);
+        return res.status(502).json({ erro: 'O investigador está indisponível no momento.' });
+      }
+      return res.json({ texto: dados.choices?.[0]?.message?.content?.trim() || '' });
+    }
+
+    return res.status(500).json({ erro: 'Nenhuma chave de IA configurada no servidor (ANTHROPIC_API_KEY ou DEEPSEEK_API_KEY).' });
   } catch (e) {
     console.error(e);
     res.status(500).json({ erro: 'Falha interna na investigação.' });
@@ -100,7 +126,8 @@ app.post('/api/chat', limitar, async (req, res) => {
 // ---------- /api/contracheck — DeepSeek, a revisora cega ----------
 app.post('/api/contracheck', limitar, async (req, res) => {
   try {
-    if (!DEEPSEEK_KEY) return res.json({ disponivel: false });
+    // Revisão cruzada exige dois provedores distintos: sem a Anthropic, a DeepSeek estaria revisando a si mesma.
+    if (!DEEPSEEK_KEY || !ANTHROPIC_KEY) return res.json({ disponivel: false });
     const { texto } = req.body;
     if (!texto || typeof texto !== 'string') return res.status(400).json({ erro: 'Texto ausente.' });
 
@@ -144,8 +171,8 @@ app.post('/api/contracheck', limitar, async (req, res) => {
 
 app.get('/api/saude', (_req, res) => res.json({
   ok: true,
-  investigador: Boolean(ANTHROPIC_KEY),
-  revisora: Boolean(DEEPSEEK_KEY)
+  investigador: ANTHROPIC_KEY ? 'claude' : (DEEPSEEK_KEY ? 'deepseek (modo de teste)' : false),
+  revisora: Boolean(ANTHROPIC_KEY && DEEPSEEK_KEY)
 }));
 
 app.listen(PORT, () => console.log(`Agente Holmes investigando na porta ${PORT}`));
