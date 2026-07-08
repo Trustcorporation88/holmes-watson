@@ -101,7 +101,7 @@ E) DIFF: duas versões cláusula a cláusula; mudanças silenciosas perigosas.
 PROFUNDIDADE PROFISSIONAL: você atende advogados e produz trabalho de banca de primeira linha. Análises de casos concretos, cláusulas e processos devem ser COMPLETAS: fundamentação artigo por artigo, jurisprudência específica identificada por número (Tema de Repercussão Geral, Tema Repetitivo, Súmula, OJ), silogismo explícito, dupla perspectiva (o que a parte contrária alegará), riscos classificados com justificativa, prazos calculados e próximos passos concretos e numerados. Extensão proporcional à complexidade: pergunta simples = resposta curta; caso concreto = análise integral (800–1500 palavras quando necessário). PROIBIDO entregar generalidades que um leigo escreveria — cada afirmação relevante precisa de base legal ou precedente.
 JURISPRUDÊNCIA OBRIGATÓRIA: ao fundamentar qualquer tese relevante, USE a busca na web para localizar e confirmar precedentes atuais e específicos (Temas do STF/STJ, Súmulas do TST, acórdãos recentes do tribunal do caso concreto), citando número e, quando possível, data e órgão julgador. O que não confirmar, marque expressamente como "a confirmar na pesquisa". NUNCA invente julgado.
 DADOS DE PROCESSO: quando o contexto trouxer um bloco [CONSULTA OFICIAL DATAJUD/CNJ], trate-o como fonte oficial dos metadados e movimentações daquele processo e construa a análise sobre ele. A ÍNTEGRA dos autos você não tem — para analisar conteúdo de decisões e petições, peça o upload das peças (PDF, foto, Word). Se a consulta ao DataJud tiver falhado, diga isso e não invente andamentos.
-FORMATO: use ## para títulos de seção, **negrito** para ênfase e — para listas; sem tabelas. Alertas de prazo SEMPRE em primeiro lugar. Feche análises concretas com a seção "## Próximos passos" numerada e o lembrete de que a revisão final cabe a advogado inscrito na OAB.`;
+FORMATO: use ## para títulos de seção, **negrito** para ênfase e — para listas. JAMAIS use tabelas markdown (linhas com |) — o chat não as renderiza e o texto vira ruído; converta qualquer informação tabular em lista com —. Links: escreva a URL pura, sem colchetes. Alertas de prazo SEMPRE em primeiro lugar. Feche análises concretas com a seção "## Próximos passos" numerada e o lembrete de que a revisão final cabe a advogado inscrito na OAB.`;
 
 const PROMPT_REVISORA = `Você é uma revisora jurídica cega. Você recebe APENAS uma análise/peça jurídica pronta, sem acesso ao raciocínio que a gerou nem ao caso original. Sua função NÃO é verificar jurisprudência (você não tem acesso a fontes) — é auditar LÓGICA e CONSISTÊNCIA INTERNA:
 1. Contradições internas (afirma X num parágrafo e não-X noutro; datas/valores que não batem).
@@ -125,11 +125,11 @@ function aliasTribunal(digitos){
 }
 async function consultarDataJud(numeroCNJ){
   const digitos = numeroCNJ.replace(/\D/g, '');
-  if (digitos.length !== 20) return null;
+  if (digitos.length !== 20) return { ok: false, motivo: 'numero_invalido' };
   const alias = aliasTribunal(digitos);
-  if (!alias) return null;
+  if (!alias) return { ok: false, motivo: 'tribunal_nao_mapeado' };
   const controle = new AbortController();
-  const timer = setTimeout(() => controle.abort(), 6000);
+  const timer = setTimeout(() => controle.abort(), 8000);
   try {
     const r = await fetch(`https://api-publica.datajud.cnj.jus.br/api_publica_${alias}/_search`, {
       method: 'POST',
@@ -137,21 +137,35 @@ async function consultarDataJud(numeroCNJ){
       headers: { 'Content-Type': 'application/json', 'Authorization': 'APIKey ' + DATAJUD_KEY },
       body: JSON.stringify({ query: { match: { numeroProcesso: digitos } }, size: 1 })
     });
-    if (!r.ok) return null;
+    if (!r.ok) {
+      const corpo = (await r.text()).slice(0, 300);
+      console.error(`DataJud HTTP ${r.status} [${alias}]:`, corpo);
+      return { ok: false, motivo: 'http_' + r.status, alias, detalhe: corpo };
+    }
     const d = await r.json();
     const p = d?.hits?.hits?.[0]?._source;
-    if (!p) return null;
+    if (!p) return { ok: false, motivo: 'nao_indexado', alias, total: d?.hits?.total?.value ?? 0 };
     const movs = (p.movimentos || []).slice(-30).map(m => `${(m.dataHora || '').slice(0,10)} — ${m.nome}${(m.complementosTabelados||[]).map(c=>' ('+c.nome+')').join('')}`);
-    return [
+    return { ok: true, alias, resumo: [
       `Tribunal: ${alias.toUpperCase()} | Classe: ${p.classe?.nome || '?'} | Órgão julgador: ${p.orgaoJulgador?.nome || '?'}`,
       `Ajuizamento: ${(p.dataAjuizamento || '').slice(0,10)} | Grau: ${p.grau || '?'} | Formato: ${p.formato?.nome || '?'}`,
       `Assuntos: ${(p.assuntos || []).map(a => a.nome).join('; ') || '?'}`,
       `Últimas movimentações (${movs.length}):`,
       ...movs
-    ].join('\n');
-  } catch { return null; }
+    ].join('\n') };
+  } catch (e) {
+    console.error('DataJud exceção:', e.message);
+    return { ok: false, motivo: e.name === 'AbortError' ? 'timeout' : 'rede', detalhe: e.message };
+  }
   finally { clearTimeout(timer); }
 }
+
+// Endpoint de diagnóstico: teste direto no navegador → /api/datajud/NUMERO
+app.get('/api/datajud/:numero', limitar, async (req, res) => {
+  const r = await consultarDataJud(String(req.params.numero || ''));
+  res.json(r.ok ? { ok: true, alias: r.alias, resumo: r.resumo.split('\n').slice(0, 12) } : r);
+});
+
 async function verificarTurnstile(token, ip) {
   if (!TURNSTILE_SECRET) return true; // proteção desativada
   if (!token) return false;
@@ -185,10 +199,15 @@ app.post('/api/chat', limitar, async (req, res) => {
     if (ultimaMsg && ultimaMsg.role === 'user' && typeof ultimaMsg.content === 'string') {
       const achado = ultimaMsg.content.match(/\d{7}-?\d{2}\.?\d{4}\.?\d\.?\d{2}\.?\d{4}/);
       if (achado) {
-        const dados = await consultarDataJud(achado[0]);
-        ultimaMsg.content += dados
-          ? `\n\n[CONSULTA OFICIAL DATAJUD/CNJ — processo ${achado[0]}]\n${dados}\n[Fim da consulta oficial. A íntegra das peças não está disponível por esta via; peça upload se precisar do conteúdo das decisões.]`
-          : `\n\n[Consulta ao DataJud/CNJ falhou ou o processo ${achado[0]} não foi localizado na base pública — NÃO invente andamentos; informe o usuário e peça a movimentação ou as peças por upload.]`;
+        const dj = await consultarDataJud(achado[0]);
+        if (dj.ok) {
+          ultimaMsg.content += `\n\n[CONSULTA OFICIAL DATAJUD/CNJ — processo ${achado[0]}]\n${dj.resumo}\n[Fim da consulta oficial. A íntegra das peças não está disponível por esta via; peça upload se precisar do conteúdo das decisões.]`;
+        } else {
+          const explicacao = dj.motivo === 'nao_indexado'
+            ? 'o processo existe no formato correto mas NÃO está indexado na base pública do CNJ (comum em processos recentes, em segredo de justiça ou com indexação atrasada)'
+            : `a consulta falhou tecnicamente (motivo: ${dj.motivo})`;
+          ultimaMsg.content += `\n\n[Consulta ao DataJud/CNJ para o processo ${achado[0]}: ${explicacao}. NÃO invente andamentos; informe o usuário com essa causa específica e peça a movimentação (print/cópia do e-SAJ) ou as peças por upload.]`;
+        }
       }
     }
 
