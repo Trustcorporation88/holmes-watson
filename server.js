@@ -14,7 +14,7 @@ const mammoth = require('mammoth');
 const XLSX = require('xlsx');
 
 const app = express();
-app.use(express.json({ limit: '12mb' }));
+app.use(express.json({ limit: '40mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
@@ -139,19 +139,22 @@ app.post('/api/chat', limitar, async (req, res) => {
     // Arquivo anexado: PDF e imagens vão nativos ao Claude; Word/Excel/CSV são extraídos para texto
     const arquivo = req.body.arquivo || pdf; // compatibilidade com o campo antigo
     if (arquivo && arquivo.data) {
-      if (String(arquivo.data).length > 8_000_000) {
-        return res.status(400).json({ erro: 'Arquivo grande demais (limite ~6MB).' });
-      }
       const nome = String(arquivo.name || 'arquivo').slice(0, 120);
       const ext = nome.toLowerCase().split('.').pop();
+      // Limites por formato (base64 ocupa ~33% mais que o binário)
+      const tamanhoMB = String(arquivo.data).length * 0.75 / 1_048_576;
+      const teto = ext === 'pdf' ? 20 : (['png','jpg','jpeg','webp','gif'].includes(ext) ? 5 : 15);
+      if (tamanhoMB > teto) {
+        return res.status(400).json({ erro: `Arquivo de ${tamanhoMB.toFixed(1)}MB excede o limite de ${teto}MB para .${ext}.` + (ext === 'pdf' ? ' Divida o PDF ou envie as páginas relevantes.' : '') });
+      }
       const ultima = historico[historico.length - 1];
       const textoUsuario = (ultima && typeof ultima.content === 'string' && ultima.content) || 'Analise o documento anexado conforme os módulos aplicáveis.';
 
-      const LIMITE_TEXTO = 60_000;
+      const LIMITE_TEXTO = 150_000;
       function anexarTexto(extraido, rotulo) {
         let corpo = String(extraido || '').trim();
         if (!corpo) return res.status(400).json({ erro: `Não consegui extrair conteúdo de ${nome}.` }) && false;
-        if (corpo.length > LIMITE_TEXTO) corpo = corpo.slice(0, LIMITE_TEXTO) + '\n[... conteúdo truncado por tamanho ...]';
+        if (corpo.length > LIMITE_TEXTO) corpo = corpo.slice(0, LIMITE_TEXTO) + '\n[... conteúdo truncado — o arquivo excede ~75 páginas de texto; peça ao usuário o trecho específico se algo faltar ...]';
         ultima.content = `[${rotulo}: "${nome}"]\n\n${corpo}\n\n[Fim do arquivo]\n\n${textoUsuario}`;
         return true;
       }
@@ -173,7 +176,7 @@ app.post('/api/chat', limitar, async (req, res) => {
           if (!anexarTexto(r.value, 'Documento Word anexado')) return;
         } else if (['xlsx','xls','csv'].includes(ext)) {
           const wb = XLSX.read(Buffer.from(arquivo.data, 'base64'), { type: 'buffer' });
-          const partes = wb.SheetNames.slice(0, 10).map(n => '== Aba: ' + n + ' ==\n' + XLSX.utils.sheet_to_csv(wb.Sheets[n]));
+          const partes = wb.SheetNames.slice(0, 15).map(n => '== Aba: ' + n + ' ==\n' + XLSX.utils.sheet_to_csv(wb.Sheets[n]));
           if (!anexarTexto(partes.join('\n\n'), 'Planilha anexada (convertida em CSV)')) return;
         } else if (ext === 'txt') {
           if (!anexarTexto(Buffer.from(arquivo.data, 'base64').toString('utf8'), 'Arquivo de texto anexado')) return;

@@ -486,24 +486,54 @@ function iconePorTipo(nome){
   if(['png','jpg','jpeg','webp','gif'].includes(ext)) return '🖼';
   return '📎';
 }
+const EXT_IMAGEM = ['png','jpg','jpeg','webp','gif'];
+function extensao(nome){ return nome.toLowerCase().split('.').pop(); }
+
 function anexarArquivo(input){
   const arquivo = input.files[0];
   if(!arquivo) return;
-  if(arquivo.size > 6 * 1024 * 1024){ alert('Arquivo grande demais — limite de 6MB.'); input.value=''; return; }
-  const leitor = new FileReader();
-  leitor.onload = () => {
-    pdfAnexado = { name: arquivo.name, data: leitor.result.split(',')[1] };
-    const chip = document.getElementById('chipPdf');
-    chip.style.display = 'block';
-    chip.innerHTML = '';
-    chip.append(iconePorTipo(arquivo.name) + ' ' + arquivo.name + ' anexado ');
-    const x = document.createElement('button');
-    x.textContent = '✕ remover';
-    x.onclick = removerPdf;
-    chip.appendChild(x);
-  };
-  leitor.readAsDataURL(arquivo);
+  const ext = extensao(arquivo.name);
+  const teto = ext === 'pdf' ? 20 : (EXT_IMAGEM.includes(ext) ? 30 : 15); // fotos grandes entram: serão comprimidas
+  if(arquivo.size > teto * 1024 * 1024){ alert('Arquivo grande demais — limite de ' + (ext==='pdf'?20:15) + 'MB.'); input.value=''; return; }
+
+  if(EXT_IMAGEM.includes(ext) && ext !== 'gif' && arquivo.size > 3 * 1024 * 1024){
+    comprimirImagem(arquivo);   // foto de celular: reduz no navegador antes de enviar
+  } else {
+    const leitor = new FileReader();
+    leitor.onload = () => registrarAnexo(arquivo.name, leitor.result.split(',')[1]);
+    leitor.readAsDataURL(arquivo);
+  }
   input.value = '';
+}
+
+function comprimirImagem(arquivo){
+  const img = new Image();
+  const url = URL.createObjectURL(arquivo);
+  img.onload = () => {
+    const maior = Math.max(img.width, img.height);
+    const escala = maior > 2200 ? 2200 / maior : 1;   // 2200px preserva a legibilidade de documentos
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.width * escala);
+    c.height = Math.round(img.height * escala);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    const dataUrl = c.toDataURL('image/jpeg', 0.88);
+    URL.revokeObjectURL(url);
+    registrarAnexo(arquivo.name.replace(/\.[^.]+$/, '') + '.jpg', dataUrl.split(',')[1]);
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); alert('Não consegui ler esta imagem.'); };
+  img.src = url;
+}
+
+function registrarAnexo(nome, base64){
+  pdfAnexado = { name: nome, data: base64 };
+  const chip = document.getElementById('chipPdf');
+  chip.style.display = 'block';
+  chip.innerHTML = '';
+  chip.append(iconePorTipo(nome) + ' ' + nome + ' anexado ');
+  const x = document.createElement('button');
+  x.textContent = '✕ remover';
+  x.onclick = removerPdf;
+  chip.appendChild(x);
 }
 function removerPdf(){
   pdfAnexado = null;
