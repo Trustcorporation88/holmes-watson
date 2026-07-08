@@ -281,7 +281,7 @@ app.post('/api/chat', limitar, async (req, res) => {
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-6',
-          max_tokens: 3800,
+          max_tokens: 8000,
           stream: true,
           system: [{ type: 'text', text: PROMPT_HOLMES, cache_control: { type: 'ephemeral' } }],
           tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
@@ -313,6 +313,8 @@ app.post('/api/chat', limitar, async (req, res) => {
             } else if (ev.type === 'content_block_start' && ev.content_block?.type === 'server_tool_use' && !avisoBusca) {
               avisoBusca = true;
               res.write('🔎 [consultando fontes na web…]\n\n');
+            } else if (ev.type === 'message_delta' && ev.delta?.stop_reason === 'max_tokens') {
+              res.write('\n\n⏸ **[Análise extensa — atingi o limite desta resposta. Envie "continue" e prossigo do ponto exato.]**');
             }
           } catch { /* linha parcial, ignora */ }
         }
