@@ -15,7 +15,11 @@ const XLSX = require('xlsx');
 
 const app = express();
 app.use(express.json({ limit: '40mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, caminho) => {
+    if (caminho.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+  }
+}));
 
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY; // opcional
