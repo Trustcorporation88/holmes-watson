@@ -22,6 +22,8 @@ const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY; // opcional
 const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY; // opcional (anti-bot)
 const TURNSTILE_SECRET = process.env.TURNSTILE_SECRET;     // opcional (anti-bot)
 const DATABASE_URL = process.env.DATABASE_URL;              // opcional (login e casos salvos)
+// Chave PÚBLICA da API DataJud, publicada pelo próprio CNJ em datajud-wiki.cnj.jus.br (pode ser sobrescrita por env)
+const DATAJUD_KEY = process.env.DATAJUD_API_KEY || 'cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw==';
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex'); // defina JWT_SECRET para sessões sobreviverem a redeploys
 
 // ---------- Banco de dados (Postgres do Railway) ----------
@@ -96,7 +98,10 @@ C) RED TEAM: persona do melhor advogado adversário; ataque tese/fatos/processo;
 D) AUDIÊNCIA: perguntas prováveis do juiz com respostas-modelo; sustentação em 3 atos.
 E) DIFF: duas versões cláusula a cláusula; mudanças silenciosas perigosas.
 
-FORMATO: respostas concisas para chat web — máximo ~350 palavras, sem tabelas markdown; parágrafos curtos e travessões. Alertas de prazo primeiro. Caso complexo: entregue o essencial e ofereça aprofundar. Em análise concreta, lembre que a revisão final cabe a advogado inscrito na OAB.`;
+PROFUNDIDADE PROFISSIONAL: você atende advogados e produz trabalho de banca de primeira linha. Análises de casos concretos, cláusulas e processos devem ser COMPLETAS: fundamentação artigo por artigo, jurisprudência específica identificada por número (Tema de Repercussão Geral, Tema Repetitivo, Súmula, OJ), silogismo explícito, dupla perspectiva (o que a parte contrária alegará), riscos classificados com justificativa, prazos calculados e próximos passos concretos e numerados. Extensão proporcional à complexidade: pergunta simples = resposta curta; caso concreto = análise integral (800–1500 palavras quando necessário). PROIBIDO entregar generalidades que um leigo escreveria — cada afirmação relevante precisa de base legal ou precedente.
+JURISPRUDÊNCIA OBRIGATÓRIA: ao fundamentar qualquer tese relevante, USE a busca na web para localizar e confirmar precedentes atuais e específicos (Temas do STF/STJ, Súmulas do TST, acórdãos recentes do tribunal do caso concreto), citando número e, quando possível, data e órgão julgador. O que não confirmar, marque expressamente como "a confirmar na pesquisa". NUNCA invente julgado.
+DADOS DE PROCESSO: quando o contexto trouxer um bloco [CONSULTA OFICIAL DATAJUD/CNJ], trate-o como fonte oficial dos metadados e movimentações daquele processo e construa a análise sobre ele. A ÍNTEGRA dos autos você não tem — para analisar conteúdo de decisões e petições, peça o upload das peças (PDF, foto, Word). Se a consulta ao DataJud tiver falhado, diga isso e não invente andamentos.
+FORMATO: use ## para títulos de seção, **negrito** para ênfase e — para listas; sem tabelas. Alertas de prazo SEMPRE em primeiro lugar. Feche análises concretas com a seção "## Próximos passos" numerada e o lembrete de que a revisão final cabe a advogado inscrito na OAB.`;
 
 const PROMPT_REVISORA = `Você é uma revisora jurídica cega. Você recebe APENAS uma análise/peça jurídica pronta, sem acesso ao raciocínio que a gerou nem ao caso original. Sua função NÃO é verificar jurisprudência (você não tem acesso a fontes) — é auditar LÓGICA e CONSISTÊNCIA INTERNA:
 1. Contradições internas (afirma X num parágrafo e não-X noutro; datas/valores que não batem).
@@ -108,6 +113,45 @@ NÃO opine sobre a veracidade de precedentes citados — apenas marque se algum 
 Responda em português do Brasil, em no máximo 200 palavras: "APROVADA SEM RESSALVAS" ou lista objetiva das falhas encontradas, cada uma em uma linha iniciada por "⚠".`;
 
 // ---------- /api/chat — Claude, o investigador ----------
+
+// ---------- DataJud (CNJ): metadados e movimentações públicas do processo ----------
+const UF_TJ = {'01':'tjac','02':'tjal','03':'tjap','04':'tjam','05':'tjba','06':'tjce','07':'tjdft','08':'tjes','09':'tjgo','10':'tjma','11':'tjmt','12':'tjms','13':'tjmg','14':'tjpa','15':'tjpb','16':'tjpr','17':'tjpe','18':'tjpi','19':'tjrj','20':'tjrn','21':'tjrs','22':'tjro','23':'tjrr','24':'tjsc','25':'tjse','26':'tjsp','27':'tjto'};
+function aliasTribunal(digitos){
+  const j = digitos[13], tr = digitos.slice(14,16);
+  if (j === '8') return UF_TJ[tr] || null;
+  if (j === '4') return 'trf' + Number(tr);
+  if (j === '5') return 'trt' + Number(tr);
+  return null;
+}
+async function consultarDataJud(numeroCNJ){
+  const digitos = numeroCNJ.replace(/\D/g, '');
+  if (digitos.length !== 20) return null;
+  const alias = aliasTribunal(digitos);
+  if (!alias) return null;
+  const controle = new AbortController();
+  const timer = setTimeout(() => controle.abort(), 6000);
+  try {
+    const r = await fetch(`https://api-publica.datajud.cnj.jus.br/api_publica_${alias}/_search`, {
+      method: 'POST',
+      signal: controle.signal,
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'APIKey ' + DATAJUD_KEY },
+      body: JSON.stringify({ query: { match: { numeroProcesso: digitos } }, size: 1 })
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    const p = d?.hits?.hits?.[0]?._source;
+    if (!p) return null;
+    const movs = (p.movimentos || []).slice(-30).map(m => `${(m.dataHora || '').slice(0,10)} — ${m.nome}${(m.complementosTabelados||[]).map(c=>' ('+c.nome+')').join('')}`);
+    return [
+      `Tribunal: ${alias.toUpperCase()} | Classe: ${p.classe?.nome || '?'} | Órgão julgador: ${p.orgaoJulgador?.nome || '?'}`,
+      `Ajuizamento: ${(p.dataAjuizamento || '').slice(0,10)} | Grau: ${p.grau || '?'} | Formato: ${p.formato?.nome || '?'}`,
+      `Assuntos: ${(p.assuntos || []).map(a => a.nome).join('; ') || '?'}`,
+      `Últimas movimentações (${movs.length}):`,
+      ...movs
+    ].join('\n');
+  } catch { return null; }
+  finally { clearTimeout(timer); }
+}
 async function verificarTurnstile(token, ip) {
   if (!TURNSTILE_SECRET) return true; // proteção desativada
   if (!token) return false;
@@ -136,60 +180,67 @@ app.post('/api/chat', limitar, async (req, res) => {
 
     const historico = messages.map(m => ({ role: m.role, content: String(m.content).slice(0, 20_000) }));
 
-    // Arquivo anexado: PDF e imagens vão nativos ao Claude; Word/Excel/CSV são extraídos para texto
-    const arquivo = req.body.arquivo || pdf; // compatibilidade com o campo antigo
-    if (arquivo && arquivo.data) {
+    // Número CNJ na última mensagem? Consulta oficial ao DataJud e injeta como contexto
+    const ultimaMsg = historico[historico.length - 1];
+    if (ultimaMsg && ultimaMsg.role === 'user' && typeof ultimaMsg.content === 'string') {
+      const achado = ultimaMsg.content.match(/\d{7}-?\d{2}\.?\d{4}\.?\d\.?\d{2}\.?\d{4}/);
+      if (achado) {
+        const dados = await consultarDataJud(achado[0]);
+        ultimaMsg.content += dados
+          ? `\n\n[CONSULTA OFICIAL DATAJUD/CNJ — processo ${achado[0]}]\n${dados}\n[Fim da consulta oficial. A íntegra das peças não está disponível por esta via; peça upload se precisar do conteúdo das decisões.]`
+          : `\n\n[Consulta ao DataJud/CNJ falhou ou o processo ${achado[0]} não foi localizado na base pública — NÃO invente andamentos; informe o usuário e peça a movimentação ou as peças por upload.]`;
+      }
+    }
+
+    // Anexos (até 5): PDF e imagens vão nativos ao Claude; Word/Excel/CSV são extraídos para texto
+    const listaAnexos = Array.isArray(req.body.arquivos) ? req.body.arquivos.slice(0, 5) : ((req.body.arquivo || pdf) ? [req.body.arquivo || pdf] : []);
+    const blocosBinarios = [];
+    const textosExtraidos = [];
+    for (const arquivo of listaAnexos) {
+      if (!arquivo || !arquivo.data) continue;
       const nome = String(arquivo.name || 'arquivo').slice(0, 120);
       const ext = nome.toLowerCase().split('.').pop();
-      // Limites por formato (base64 ocupa ~33% mais que o binário)
       const tamanhoMB = String(arquivo.data).length * 0.75 / 1_048_576;
       const teto = ext === 'pdf' ? 20 : (['png','jpg','jpeg','webp','gif'].includes(ext) ? 5 : 15);
       if (tamanhoMB > teto) {
-        return res.status(400).json({ erro: `Arquivo de ${tamanhoMB.toFixed(1)}MB excede o limite de ${teto}MB para .${ext}.` + (ext === 'pdf' ? ' Divida o PDF ou envie as páginas relevantes.' : '') });
+        return res.status(400).json({ erro: `"${nome}" tem ${tamanhoMB.toFixed(1)}MB e excede o limite de ${teto}MB para .${ext}.` });
       }
-      const ultima = historico[historico.length - 1];
-      const textoUsuario = (ultima && typeof ultima.content === 'string' && ultima.content) || 'Analise o documento anexado conforme os módulos aplicáveis.';
-
       const LIMITE_TEXTO = 150_000;
-      function anexarTexto(extraido, rotulo) {
-        let corpo = String(extraido || '').trim();
-        if (!corpo) return res.status(400).json({ erro: `Não consegui extrair conteúdo de ${nome}.` }) && false;
-        if (corpo.length > LIMITE_TEXTO) corpo = corpo.slice(0, LIMITE_TEXTO) + '\n[... conteúdo truncado — o arquivo excede ~75 páginas de texto; peça ao usuário o trecho específico se algo faltar ...]';
-        ultima.content = `[${rotulo}: "${nome}"]\n\n${corpo}\n\n[Fim do arquivo]\n\n${textoUsuario}`;
-        return true;
-      }
-
       try {
         if (ext === 'pdf' && ANTHROPIC_KEY) {
-          ultima.content = [
-            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: arquivo.data } },
-            { type: 'text', text: textoUsuario }
-          ];
+          blocosBinarios.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: arquivo.data } });
         } else if (['png','jpg','jpeg','webp','gif'].includes(ext) && ANTHROPIC_KEY) {
           const mapa = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', webp:'image/webp', gif:'image/gif' };
-          ultima.content = [
-            { type: 'image', source: { type: 'base64', media_type: mapa[ext], data: arquivo.data } },
-            { type: 'text', text: 'Leia integralmente o documento na imagem (OCR), transcrevendo os trechos relevantes antes de analisar. ' + textoUsuario }
-          ];
+          blocosBinarios.push({ type: 'image', source: { type: 'base64', media_type: mapa[ext], data: arquivo.data } });
         } else if (ext === 'docx') {
           const r = await mammoth.extractRawText({ buffer: Buffer.from(arquivo.data, 'base64') });
-          if (!anexarTexto(r.value, 'Documento Word anexado')) return;
+          let corpo = String(r.value || '').trim().slice(0, LIMITE_TEXTO);
+          if (!corpo) return res.status(400).json({ erro: `Não consegui extrair conteúdo de ${nome}.` });
+          textosExtraidos.push(`[Documento Word: "${nome}"]\n${corpo}\n[Fim de ${nome}]`);
         } else if (['xlsx','xls','csv'].includes(ext)) {
           const wb = XLSX.read(Buffer.from(arquivo.data, 'base64'), { type: 'buffer' });
           const partes = wb.SheetNames.slice(0, 15).map(n => '== Aba: ' + n + ' ==\n' + XLSX.utils.sheet_to_csv(wb.Sheets[n]));
-          if (!anexarTexto(partes.join('\n\n'), 'Planilha anexada (convertida em CSV)')) return;
+          let corpo = partes.join('\n\n').slice(0, LIMITE_TEXTO);
+          textosExtraidos.push(`[Planilha (CSV): "${nome}"]\n${corpo}\n[Fim de ${nome}]`);
         } else if (ext === 'txt') {
-          if (!anexarTexto(Buffer.from(arquivo.data, 'base64').toString('utf8'), 'Arquivo de texto anexado')) return;
+          textosExtraidos.push(`[Arquivo de texto: "${nome}"]\n${Buffer.from(arquivo.data, 'base64').toString('utf8').slice(0, LIMITE_TEXTO)}\n[Fim de ${nome}]`);
         } else if (['pdf','png','jpg','jpeg','webp','gif'].includes(ext)) {
           return res.status(400).json({ erro: 'PDF e imagens exigem o investigador Claude ativo neste servidor.' });
         } else {
-          return res.status(400).json({ erro: 'Formato não suportado. Envie PDF, DOCX, XLSX, XLS, CSV, TXT ou imagem (PNG/JPG/WEBP).' });
+          return res.status(400).json({ erro: `Formato de "${nome}" não suportado. Envie PDF, DOCX, XLSX, XLS, CSV, TXT ou imagem.` });
         }
       } catch (e) {
         console.error('Falha ao processar anexo:', e.message);
         return res.status(400).json({ erro: `Não consegui ler o arquivo ${nome}. Ele pode estar corrompido ou protegido por senha.` });
       }
     }
+    if (listaAnexos.length) {
+      const ultima = historico[historico.length - 1];
+      const textoBase = (ultima && typeof ultima.content === 'string' && ultima.content) || 'Analise os documentos anexados conforme os módulos aplicáveis.';
+      const instrucaoImagem = blocosBinarios.some(b => b.type === 'image') ? 'Leia integralmente os documentos nas imagens (OCR), transcrevendo os trechos relevantes antes de analisar. ' : '';
+      const textoFinal = (textosExtraidos.length ? textosExtraidos.join('\n\n') + '\n\n' : '') + instrucaoImagem + textoBase;
+      ultima.content = blocosBinarios.length ? [...blocosBinarios, { type: 'text', text: textoFinal }] : textoFinal;
+        }
 
     // Streaming para o cliente: texto puro em chunks
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -207,10 +258,10 @@ app.post('/api/chat', limitar, async (req, res) => {
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-6',
-          max_tokens: 2000,
+          max_tokens: 3800,
           stream: true,
           system: [{ type: 'text', text: PROMPT_HOLMES, cache_control: { type: 'ephemeral' } }],
-          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
+          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
           messages: historico
         })
       });
@@ -390,7 +441,9 @@ app.get('/api/saude', (_req, res) => res.json({
   buscaWeb: Boolean(ANTHROPIC_KEY),
   pdf: Boolean(ANTHROPIC_KEY),
   turnstileSiteKey: TURNSTILE_SITE_KEY || null,
-  contas: Boolean(pool)
+  contas: Boolean(pool),
+  datajud: true,
+  multiAnexos: 5
 }));
 
 app.listen(PORT, () => console.log(`Agente Holmes investigando na porta ${PORT}`));

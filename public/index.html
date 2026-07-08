@@ -248,6 +248,8 @@ footer .assin{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text
 .lista-casos li a:hover{color:var(--lacre)}
 .lista-casos .apagar{border:none;background:none;color:var(--tinta-suave);cursor:pointer;font-size:.8rem}
 .lista-casos .apagar:hover{color:var(--lacre)}
+.titulo-analise{display:block;font-weight:600;letter-spacing:.03em;margin:14px 0 4px;color:#3a2320;text-transform:uppercase;font-size:.82rem}
+.hr-analise{display:block;border-top:1px dashed rgba(36,31,21,.3);margin:12px 0}
 </style>
 </head>
 <body>
@@ -392,6 +394,7 @@ footer .assin{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text
         <span class="luz acesa" id="luzStatus"></span>
         <span>Transcrição do interrogatório</span>
         <span class="mesa-acoes">
+          <button id="btnNovo" onclick="novoCaso()" title="Limpar a mesa e abrir uma investigação nova" style="display:none">➕ Novo caso</button>
           <button id="btnDossie" onclick="baixarDossie()" title="Exportar a investigação em PDF" style="display:none">📄 Dossiê</button>
           <button id="btnSalvar" onclick="salvarCaso()" title="Salvar este caso na sua conta" style="display:none">💾 Salvar</button>
           <button id="btnCasos" onclick="abrirCasos()" title="Seus casos salvos" style="display:none">🗂 Casos</button>
@@ -405,7 +408,7 @@ footer .assin{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text
         </div>
       </div>
       <div class="entrada">
-        <input type="file" id="campoArquivo" accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,.png,.jpg,.jpeg,.webp,.gif" style="display:none" onchange="anexarArquivo(this)">
+        <input type="file" id="campoArquivo" accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,.png,.jpg,.jpeg,.webp,.gif" multiple style="display:none" onchange="anexarArquivo(this)">
         <button class="anexo" onclick="document.getElementById('campoArquivo').click()" title="Anexar PDF, Word, Excel, CSV ou foto de documento" aria-label="Anexar arquivo">📎</button>
         <textarea id="campoMensagem" placeholder="Descreva o caso, cole a cláusula ou faça a pergunta..." aria-label="Sua mensagem para o Holmes"></textarea>
         <button id="botaoEnviar" onclick="enviar()">Enviar</button>
@@ -437,9 +440,18 @@ footer .assin{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text
 <script>
 const historico = [];
 let revisoraDisponivel = false;
-let pdfAnexado = null; // {name, data}
+let anexos = []; // [{name, data}]
 let turnstileToken = null;
 let turnstileWidget = null;
+let numeroAnalise = 0;
+const SAUDACAO = 'Boa noite. Sente-se — o caso que o trouxe aqui já está estampado na sua expressão. Conte-me os fatos em qualquer ordem; a ordem certa é trabalho meu. Posso analisar uma cláusula, montar uma linha de defesa ou atacar a sua própria tese antes que o adversário o faça.';
+function novoCaso(){
+  if(historico.length && !confirm('Limpar a mesa e começar um caso novo? A investigação atual não salva será perdida.')) return;
+  historico.length = 0; casoAtualId = null; numeroAnalise = 0;
+  transcricao.innerHTML = '';
+  adicionarFala('Holmes', SAUDACAO, 'holmes');
+  atualizarBarra();
+}
 const transcricao = document.getElementById('transcricao');
 const campo = document.getElementById('campoMensagem');
 const botao = document.getElementById('botaoEnviar');
@@ -490,18 +502,18 @@ const EXT_IMAGEM = ['png','jpg','jpeg','webp','gif'];
 function extensao(nome){ return nome.toLowerCase().split('.').pop(); }
 
 function anexarArquivo(input){
-  const arquivo = input.files[0];
-  if(!arquivo) return;
-  const ext = extensao(arquivo.name);
-  const teto = ext === 'pdf' ? 20 : (EXT_IMAGEM.includes(ext) ? 30 : 15); // fotos grandes entram: serão comprimidas
-  if(arquivo.size > teto * 1024 * 1024){ alert('Arquivo grande demais — limite de ' + (ext==='pdf'?20:15) + 'MB.'); input.value=''; return; }
-
-  if(EXT_IMAGEM.includes(ext) && ext !== 'gif' && arquivo.size > 3 * 1024 * 1024){
-    comprimirImagem(arquivo);   // foto de celular: reduz no navegador antes de enviar
-  } else {
-    const leitor = new FileReader();
-    leitor.onload = () => registrarAnexo(arquivo.name, leitor.result.split(',')[1]);
-    leitor.readAsDataURL(arquivo);
+  for(const arquivo of Array.from(input.files)){
+    if(anexos.length >= 5){ alert('Máximo de 5 anexos por mensagem.'); break; }
+    const ext = extensao(arquivo.name);
+    const teto = ext === 'pdf' ? 20 : (EXT_IMAGEM.includes(ext) ? 30 : 15);
+    if(arquivo.size > teto * 1024 * 1024){ alert(arquivo.name + ' excede ' + (ext==='pdf'?20:15) + 'MB.'); continue; }
+    if(EXT_IMAGEM.includes(ext) && ext !== 'gif' && arquivo.size > 3 * 1024 * 1024){
+      comprimirImagem(arquivo);
+    } else {
+      const leitor = new FileReader();
+      leitor.onload = () => registrarAnexo(arquivo.name, leitor.result.split(',')[1]);
+      leitor.readAsDataURL(arquivo);
+    }
   }
   input.value = '';
 }
@@ -511,7 +523,7 @@ function comprimirImagem(arquivo){
   const url = URL.createObjectURL(arquivo);
   img.onload = () => {
     const maior = Math.max(img.width, img.height);
-    const escala = maior > 2200 ? 2200 / maior : 1;   // 2200px preserva a legibilidade de documentos
+    const escala = maior > 2200 ? 2200 / maior : 1;
     const c = document.createElement('canvas');
     c.width = Math.round(img.width * escala);
     c.height = Math.round(img.height * escala);
@@ -525,21 +537,35 @@ function comprimirImagem(arquivo){
 }
 
 function registrarAnexo(nome, base64){
-  pdfAnexado = { name: nome, data: base64 };
+  anexos.push({ name: nome, data: base64 });
+  desenharChips();
+}
+function desenharChips(){
   const chip = document.getElementById('chipPdf');
+  if(!anexos.length){ chip.style.display = 'none'; return; }
   chip.style.display = 'block';
   chip.innerHTML = '';
-  chip.append(iconePorTipo(nome) + ' ' + nome + ' anexado ');
-  const x = document.createElement('button');
-  x.textContent = '✕ remover';
-  x.onclick = removerPdf;
-  chip.appendChild(x);
+  anexos.forEach((a, i) => {
+    const span = document.createElement('span');
+    span.style.marginRight = '14px';
+    span.append(iconePorTipo(a.name) + ' ' + a.name + ' ');
+    const x = document.createElement('button');
+    x.textContent = '✕';
+    x.onclick = () => { anexos.splice(i,1); desenharChips(); };
+    span.appendChild(x);
+    chip.appendChild(span);
+  });
 }
-function removerPdf(){
-  pdfAnexado = null;
-  document.getElementById('chipPdf').style.display = 'none';
-}
+function removerPdf(){ anexos = []; desenharChips(); }
 
+function escHtml(t){ const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+function renderMd(t){
+  let h = escHtml(t);
+  h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/^##+\s*(.+)$/gm, '<span class="titulo-analise">$1</span>');
+  h = h.replace(/^---+\s*$/gm, '<span class="hr-analise"></span>');
+  return h;
+}
 function adicionarFala(autor, texto, classes){
   const div = document.createElement('div');
   div.className = 'fala ' + classes;
@@ -547,7 +573,7 @@ function adicionarFala(autor, texto, classes){
   rot.className = 'autor';
   rot.textContent = autor;
   const p = document.createElement('p');
-  p.textContent = texto;
+  if(classes.indexOf('holmes') !== -1 && classes.indexOf('pensando') === -1){ p.innerHTML = renderMd(texto); } else { p.textContent = texto; }
   div.appendChild(rot); div.appendChild(p);
   transcricao.appendChild(div);
   transcricao.scrollTop = transcricao.scrollHeight;
@@ -583,14 +609,14 @@ async function contraCheck(botaoCC, textoResposta){
 
 async function enviar(){
   const texto = campo.value.trim();
-  if((!texto && !pdfAnexado) || botao.disabled) return;
+  if((!texto && !anexos.length) || botao.disabled) return;
   campo.value = '';
 
-  const rotuloUsuario = pdfAnexado ? (texto || 'Analise o documento.') + '  ' + iconePorTipo(pdfAnexado.name) + ' ' + pdfAnexado.name : texto;
+  const rotuloUsuario = anexos.length ? (texto || 'Analise os documentos.') + '  ' + anexos.map(a => iconePorTipo(a.name) + ' ' + a.name).join('  ') : texto;
   adicionarFala('Você', rotuloUsuario, 'usuario');
   historico.push({role:'user', content: texto || 'Analise o documento anexado conforme os módulos aplicáveis.'});
 
-  const pdfEnvio = pdfAnexado;
+  const anexosEnvio = anexos.slice();
   removerPdf();
 
   botao.disabled = true;
@@ -602,7 +628,7 @@ async function enviar(){
     const resposta = await fetch('/api/chat', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ messages: historico, arquivo: pdfEnvio, turnstileToken })
+      body: JSON.stringify({ messages: historico, arquivos: anexosEnvio, turnstileToken })
     });
 
     if(!resposta.ok){
@@ -621,11 +647,13 @@ async function enviar(){
       const {done, value} = await leitor.read();
       if(done) break;
       completo += decoder.decode(value, {stream:true});
-      paragrafo.textContent = completo;
+      paragrafo.innerHTML = renderMd(completo);
       transcricao.scrollTop = transcricao.scrollHeight;
     }
 
     if(completo.trim()){
+      numeroAnalise++;
+      fala.querySelector('.autor').textContent = 'Holmes · Análise nº ' + numeroAnalise;
       historico.push({role:'assistant', content: completo});
       adicionarBotaoContraCheck(fala, completo);
       atualizarBarra();
@@ -661,6 +689,7 @@ function atualizarBarra(){
   document.getElementById('btnCasos').style.display = (contasAtivas && logado) ? '' : 'none';
   document.getElementById('btnSalvar').style.display = (contasAtivas && logado && historico.length > 0) ? '' : 'none';
   document.getElementById('btnDossie').style.display = historico.length > 1 ? '' : 'none';
+  document.getElementById('btnNovo').style.display = historico.length > 0 ? '' : 'none';
 }
 
 function fecharModal(){ document.getElementById('veu').style.display = 'none'; }
@@ -782,8 +811,17 @@ async function baixarDossie(){
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ unit:'mm', format:'a4' });
     const margem = 20, largura = 170;
+    const TINTA = [25, 20, 12];          // tinta escura de verdade
     let y = 0;
 
+    function limparMd(t){
+      return String(t)
+        .replace(/\*\*(.+?)\*\*/g, '$1')
+        .replace(/\*(.+?)\*/g, '$1')
+        .replace(/^#+\s*/gm, '')
+        .replace(/^---+\s*$/gm, '');
+    }
+    function corpoPadrao(){ doc.setFont('times','normal'); doc.setFontSize(10.4); doc.setTextColor(TINTA[0],TINTA[1],TINTA[2]); }
     function cabecalho(){
       doc.setFillColor(20,17,9); doc.rect(0,0,210,26,'F');
       doc.setTextColor(194,161,77); doc.setFont('times','bold'); doc.setFontSize(15);
@@ -791,29 +829,41 @@ async function baixarDossie(){
       doc.setTextColor(239,230,210); doc.setFont('courier','normal'); doc.setFontSize(7.5);
       doc.text('DOSSIÊ DE INVESTIGAÇÃO JURÍDICA — ' + new Date().toLocaleDateString('pt-BR') + ' — watson.trustcorp.com.br', margem, 19);
       y = 36;
+      corpoPadrao();                      // CORREÇÃO: restaura a tinta do corpo após o cabeçalho (bug das letras claras)
     }
+    function quebra(alt){ if(y + alt > 278){ doc.addPage(); cabecalho(); } }
     function rodape(){
       const n = doc.internal.getNumberOfPages();
       for(let i=1;i<=n;i++){
         doc.setPage(i);
-        doc.setFont('courier','normal'); doc.setFontSize(6.6); doc.setTextColor(120,110,90);
+        doc.setFont('courier','normal'); doc.setFontSize(6.6); doc.setTextColor(110,100,80);
         doc.text('Este dossiê é apoio técnico gerado por IA e não substitui advogado inscrito na OAB. Confira a jurisprudência nas fontes oficiais.', margem, 288);
         doc.text('Página ' + i + ' de ' + n, 210-margem, 288, {align:'right'});
       }
     }
-    function quebra(alt){ if(y + alt > 278){ doc.addPage(); cabecalho(); } }
 
     cabecalho();
+    let nAnalise = 0;
     for(const m of historico){
-      const autor = m.role === 'user' ? 'CLIENTE' : 'HOLMES';
-      doc.setFont('courier','bold'); doc.setFontSize(8);
-      doc.setTextColor(m.role === 'user' ? 140 : 90, m.role === 'user' ? 51 : 82, m.role === 'user' ? 48 : 64);
-      quebra(12);
-      doc.text(autor, margem, y); y += 5;
-      doc.setFont('times','normal'); doc.setFontSize(10.2); doc.setTextColor(36,31,21);
-      const linhas = doc.splitTextToSize(String(m.content), largura);
-      for(const linha of linhas){ quebra(6); doc.text(linha, margem, y); y += 5.1; }
-      y += 4;
+      const ehTitulo = (l) => /^#{1,3}\s/.test(l);
+      let autor;
+      if(m.role === 'user'){ autor = 'CLIENTE'; } else { nAnalise++; autor = 'HOLMES — ANÁLISE Nº ' + nAnalise; }
+      quebra(14);
+      doc.setFont('courier','bold'); doc.setFontSize(8.2);
+      if(m.role === 'user'){ doc.setTextColor(140,51,48); } else { doc.setTextColor(70,60,40); }
+      doc.text(autor, margem, y); y += 5.5;
+      corpoPadrao();
+      const brutas = String(m.content).split('\n');
+      for(const bruta of brutas){
+        const titulo = ehTitulo(bruta);
+        const linhaLimpa = limparMd(bruta);
+        if(!linhaLimpa.trim()){ y += 2.6; continue; }
+        if(titulo){ doc.setFont('times','bold'); doc.setFontSize(11); }
+        const linhas = doc.splitTextToSize(linhaLimpa, largura);
+        for(const linha of linhas){ quebra(6); doc.text(linha, margem, y); y += 5.2; }
+        if(titulo){ corpoPadrao(); y += 1; }
+      }
+      y += 5;
     }
     rodape();
     doc.save('dossie-agente-holmes-' + new Date().toISOString().slice(0,10) + '.pdf');
