@@ -6,6 +6,10 @@
 
 const express = require('express');
 const path = require('path');
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const { Pool } = require('pg');
 
 const app = express();
 app.use(express.json({ limit: '12mb' }));
@@ -15,6 +19,45 @@ const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY; // opcional
 const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY; // opcional (anti-bot)
 const TURNSTILE_SECRET = process.env.TURNSTILE_SECRET;     // opcional (anti-bot)
+const DATABASE_URL = process.env.DATABASE_URL;              // opcional (login e casos salvos)
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex'); // defina JWT_SECRET para sessões sobreviverem a redeploys
+
+// ---------- Banco de dados (Postgres do Railway) ----------
+let pool = null;
+if (DATABASE_URL) {
+  pool = new Pool({
+    connectionString: DATABASE_URL,
+    ssl: /railway\.internal/.test(DATABASE_URL) ? false : { rejectUnauthorized: false }
+  });
+  pool.query(`
+    CREATE TABLE IF NOT EXISTS usuarios (
+      id SERIAL PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      senha_hash TEXT NOT NULL,
+      criado_em TIMESTAMPTZ DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS casos (
+      id SERIAL PRIMARY KEY,
+      usuario_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
+      titulo TEXT NOT NULL,
+      historico JSONB NOT NULL,
+      criado_em TIMESTAMPTZ DEFAULT now(),
+      atualizado_em TIMESTAMPTZ DEFAULT now()
+    );
+  `).then(() => console.log('Banco pronto: usuarios e casos'))
+    .catch(e => { console.error('Falha ao preparar o banco:', e.message); pool = null; });
+}
+
+function autenticar(req, res, next) {
+  if (!pool) return res.status(503).json({ erro: 'Contas desativadas neste servidor.' });
+  const token = (req.headers.authorization || '').replace('Bearer ', '');
+  try {
+    req.usuario = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ erro: 'Sessão inválida ou expirada. Entre novamente.' });
+  }
+}
 const PORT = process.env.PORT || 3000;
 
 // Limite simples de requisições por IP (proteção básica de custo)
@@ -230,13 +273,81 @@ app.post('/api/contracheck', limitar, async (req, res) => {
   }
 });
 
+
+// ---------- Contas e casos salvos ----------
+app.post('/api/registro', limitar, async (req, res) => {
+  try {
+    if (!pool) return res.status(503).json({ erro: 'Contas desativadas neste servidor.' });
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const senha = String(req.body.senha || '');
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json({ erro: 'E-mail inválido.' });
+    if (senha.length < 8) return res.status(400).json({ erro: 'A senha precisa de ao menos 8 caracteres.' });
+    const hash = await bcrypt.hash(senha, 10);
+    const r = await pool.query('INSERT INTO usuarios (email, senha_hash) VALUES ($1,$2) RETURNING id', [email, hash]);
+    const token = jwt.sign({ id: r.rows[0].id, email }, JWT_SECRET, { expiresIn: '30d' });
+    res.json({ token, email });
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ erro: 'Este e-mail já tem conta. Use Entrar.' });
+    console.error(e); res.status(500).json({ erro: 'Falha ao criar a conta.' });
+  }
+});
+
+app.post('/api/login', limitar, async (req, res) => {
+  try {
+    if (!pool) return res.status(503).json({ erro: 'Contas desativadas neste servidor.' });
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const senha = String(req.body.senha || '');
+    const r = await pool.query('SELECT id, senha_hash FROM usuarios WHERE email = $1', [email]);
+    if (!r.rows[0] || !(await bcrypt.compare(senha, r.rows[0].senha_hash))) {
+      return res.status(401).json({ erro: 'E-mail ou senha incorretos.' });
+    }
+    const token = jwt.sign({ id: r.rows[0].id, email }, JWT_SECRET, { expiresIn: '30d' });
+    res.json({ token, email });
+  } catch (e) { console.error(e); res.status(500).json({ erro: 'Falha no login.' }); }
+});
+
+app.get('/api/casos', autenticar, async (req, res) => {
+  const r = await pool.query('SELECT id, titulo, atualizado_em FROM casos WHERE usuario_id = $1 ORDER BY atualizado_em DESC LIMIT 50', [req.usuario.id]);
+  res.json({ casos: r.rows });
+});
+
+app.post('/api/casos', autenticar, async (req, res) => {
+  try {
+    const { titulo, historico, casoId } = req.body;
+    if (!Array.isArray(historico) || historico.length === 0) return res.status(400).json({ erro: 'Nada para salvar ainda.' });
+    if (JSON.stringify(historico).length > 300_000) return res.status(400).json({ erro: 'Caso grande demais para salvar.' });
+    const t = String(titulo || 'Caso sem título').slice(0, 120);
+    if (casoId) {
+      const r = await pool.query('UPDATE casos SET titulo=$1, historico=$2, atualizado_em=now() WHERE id=$3 AND usuario_id=$4 RETURNING id', [t, JSON.stringify(historico), casoId, req.usuario.id]);
+      if (!r.rows[0]) return res.status(404).json({ erro: 'Caso não encontrado.' });
+      return res.json({ id: r.rows[0].id, atualizado: true });
+    }
+    const total = await pool.query('SELECT COUNT(*) FROM casos WHERE usuario_id = $1', [req.usuario.id]);
+    if (Number(total.rows[0].count) >= 50) return res.status(400).json({ erro: 'Limite de 50 casos salvos. Apague algum para continuar.' });
+    const r = await pool.query('INSERT INTO casos (usuario_id, titulo, historico) VALUES ($1,$2,$3) RETURNING id', [req.usuario.id, t, JSON.stringify(historico)]);
+    res.json({ id: r.rows[0].id });
+  } catch (e) { console.error(e); res.status(500).json({ erro: 'Falha ao salvar o caso.' }); }
+});
+
+app.get('/api/casos/:id', autenticar, async (req, res) => {
+  const r = await pool.query('SELECT id, titulo, historico FROM casos WHERE id = $1 AND usuario_id = $2', [req.params.id, req.usuario.id]);
+  if (!r.rows[0]) return res.status(404).json({ erro: 'Caso não encontrado.' });
+  res.json(r.rows[0]);
+});
+
+app.delete('/api/casos/:id', autenticar, async (req, res) => {
+  await pool.query('DELETE FROM casos WHERE id = $1 AND usuario_id = $2', [req.params.id, req.usuario.id]);
+  res.json({ ok: true });
+});
+
 app.get('/api/saude', (_req, res) => res.json({
   ok: true,
   investigador: ANTHROPIC_KEY ? 'claude' : (DEEPSEEK_KEY ? 'deepseek (modo de teste)' : false),
   revisora: Boolean(ANTHROPIC_KEY && DEEPSEEK_KEY),
   buscaWeb: Boolean(ANTHROPIC_KEY),
   pdf: Boolean(ANTHROPIC_KEY),
-  turnstileSiteKey: TURNSTILE_SITE_KEY || null
+  turnstileSiteKey: TURNSTILE_SITE_KEY || null,
+  contas: Boolean(pool)
 }));
 
 app.listen(PORT, () => console.log(`Agente Holmes investigando na porta ${PORT}`));

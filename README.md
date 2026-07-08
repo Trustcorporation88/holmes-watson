@@ -43,6 +43,25 @@ node --env-file=.env server.js
 # depois abra http://localhost:3000
 ```
 
+## Funcionalidades
+
+- **Chat com streaming** — a resposta do Holmes surge em tempo real.
+- **Busca na web** (com ANTHROPIC_API_KEY) — o investigador verifica jurisprudência e fontes atuais, até 3 consultas por resposta.
+- **Anexo de PDF** — contratos analisados no documento real (Módulos A e E), limite 6MB.
+- **Contas e casos salvos** (com DATABASE_URL) — registro/login com senha criptografada (bcrypt) e sessões JWT; até 50 casos por usuário, com salvar, reabrir e apagar.
+- **Dossiê em PDF** — exporta a investigação com timbre, data, paginação e aviso OAB.
+- **Contra-check Watson** (com as duas chaves de IA) — revisão cega cruzada.
+- **Turnstile** (com as chaves TURNSTILE_*) — anti-bot invisível da Cloudflare.
+
+Cada funcionalidade liga sozinha quando sua variável existe e se desliga sem quebrar nada quando ausente.
+
+## Banco de dados (casos salvos)
+
+1. No projeto Railway: **Create → Database → Add PostgreSQL**.
+2. No serviço holmes-watson → **Variables → New Variable → Add Reference** → selecione `DATABASE_URL` do Postgres criado.
+3. Adicione também `JWT_SECRET` com uma frase longa aleatória (sem ela, cada redeploy desconecta os usuários logados).
+4. O servidor cria as tabelas sozinho no primeiro boot.
+
 ## Proteções incluídas
 
 - Rate limit de 15 requisições/minuto por IP (proteção básica de custo).

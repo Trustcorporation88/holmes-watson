@@ -226,6 +226,28 @@ footer .assin{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text
 .anexo:hover{transform:scale(1.15)}
 .chip-pdf{font-family:var(--mono);font-size:.66rem;letter-spacing:.08em;color:var(--tinta);background:var(--papel-2);padding:8px 22px;border-top:1px dashed rgba(36,31,21,.25)}
 .chip-pdf button{border:none;background:none;color:var(--lacre);cursor:pointer;font-family:var(--mono);margin-left:10px}
+.mesa-acoes{margin-left:auto;display:flex;gap:8px}
+.mesa-acoes button{
+  border:1px solid rgba(239,230,210,.35);background:transparent;color:var(--papel-2);
+  font-family:var(--mono);font-size:.62rem;letter-spacing:.1em;text-transform:uppercase;
+  padding:5px 10px;border-radius:2px;cursor:pointer;transition:all .2s;
+}
+.mesa-acoes button:hover{border-color:var(--latao);color:var(--latao-claro)}
+.veu{position:fixed;inset:0;background:rgba(10,8,4,.7);backdrop-filter:blur(3px);z-index:100;display:flex;align-items:center;justify-content:center;padding:20px}
+.modal{background:var(--papel);color:var(--tinta);border-radius:3px;padding:30px 28px;width:100%;max-width:420px;box-shadow:12px 12px 0 rgba(0,0,0,.4)}
+.modal h3{font-family:var(--serif-display);font-weight:600;font-size:1.4rem;margin-bottom:18px;border-bottom:1px solid rgba(36,31,21,.2);padding-bottom:10px}
+.modal input{width:100%;padding:12px 14px;margin-bottom:12px;border:1px solid rgba(36,31,21,.35);border-radius:2px;background:rgba(255,255,255,.5);font-family:var(--serif-body);font-size:.95rem;color:var(--tinta)}
+.modal .btn-modal{width:100%;padding:13px;border:none;background:var(--lacre);color:var(--papel);font-family:var(--mono);font-size:.72rem;letter-spacing:.12em;text-transform:uppercase;border-radius:2px;cursor:pointer;margin-top:4px}
+.modal .btn-modal:hover{background:#a03e3a}
+.modal .alterna{font-size:.82rem;margin-top:14px;text-align:center;color:var(--tinta-suave)}
+.modal .alterna a{color:var(--lacre);cursor:pointer;text-decoration:underline}
+.modal .erro-modal{color:var(--lacre);font-size:.82rem;margin-bottom:10px;min-height:1em}
+.lista-casos{list-style:none;max-height:320px;overflow-y:auto}
+.lista-casos li{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 4px;border-bottom:1px dashed rgba(36,31,21,.2)}
+.lista-casos li a{cursor:pointer;color:var(--tinta);text-decoration:none;flex:1;font-size:.94rem}
+.lista-casos li a:hover{color:var(--lacre)}
+.lista-casos .apagar{border:none;background:none;color:var(--tinta-suave);cursor:pointer;font-size:.8rem}
+.lista-casos .apagar:hover{color:var(--lacre)}
 </style>
 </head>
 <body>
@@ -369,6 +391,12 @@ footer .assin{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text
       <div class="mesa-topo">
         <span class="luz acesa" id="luzStatus"></span>
         <span>Transcrição do interrogatório</span>
+        <span class="mesa-acoes">
+          <button id="btnDossie" onclick="baixarDossie()" title="Exportar a investigação em PDF" style="display:none">📄 Dossiê</button>
+          <button id="btnSalvar" onclick="salvarCaso()" title="Salvar este caso na sua conta" style="display:none">💾 Salvar</button>
+          <button id="btnCasos" onclick="abrirCasos()" title="Seus casos salvos" style="display:none">🗂 Casos</button>
+          <button id="btnConta" onclick="abrirConta()" style="display:none">Entrar</button>
+        </span>
       </div>
       <div class="transcricao" id="transcricao" aria-live="polite">
         <div class="fala holmes">
@@ -394,6 +422,13 @@ footer .assin{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text
 </section>
 </main>
 
+<div class="veu" id="veu" style="display:none" onclick="if(event.target===this)fecharModal()">
+  <div class="modal" role="dialog" aria-modal="true">
+    <h3 id="modalTitulo">Entrar</h3>
+    <div id="modalCorpo"></div>
+  </div>
+</div>
+
 <footer>
   <p class="aviso">O Agente Holmes presta apoio técnico-jurídico com inteligência artificial e não substitui advogado inscrito na OAB. Peças e análises devem ser revisadas e subscritas por profissional habilitado; a jurisprudência citada deve ser conferida nas fontes oficiais antes de fundamentar peça protocolada. A estratégia final é sempre decisão do advogado responsável com o cliente.</p>
   <p class="assin">Agente Holmes · Tributário — Sucessório — Civil — Trabalhista · MMXXVI</p>
@@ -414,6 +449,8 @@ fetch('/api/saude').then(r => r.json()).then(s => {
   revisoraDisponivel = !!s.revisora;
   if(!s.pdf){ document.querySelector('.anexo').style.display = 'none'; }
   if(s.turnstileSiteKey){ carregarTurnstile(s.turnstileSiteKey); }
+  contasAtivas = !!s.contas;
+  atualizarBarra();
 }).catch(() => {});
 
 function carregarTurnstile(sitekey){
@@ -553,6 +590,7 @@ async function enviar(){
     if(completo.trim()){
       historico.push({role:'assistant', content: completo});
       adicionarBotaoContraCheck(fala, completo);
+      atualizarBarra();
     } else {
       paragrafo.textContent = 'A investigação voltou vazia. Envie novamente.';
       historico.pop();
@@ -565,6 +603,186 @@ async function enviar(){
     luz.classList.add('acesa');
     if(turnstileWidget !== null && typeof turnstile !== 'undefined'){ turnstileToken = null; turnstile.reset(turnstileWidget); }
     campo.focus();
+  }
+}
+
+// ================= CONTAS, CASOS SALVOS E DOSSIÊ =================
+let sessao = null;   // {token, email}
+let casoAtualId = null;
+let contasAtivas = false;
+
+try {
+  const salvo = localStorage.getItem('holmes_sessao');
+  if (salvo) sessao = JSON.parse(salvo);
+} catch {}
+
+function atualizarBarra(){
+  const logado = !!(sessao && sessao.token);
+  document.getElementById('btnConta').style.display = contasAtivas ? '' : 'none';
+  document.getElementById('btnConta').textContent = logado ? sessao.email.split('@')[0] + ' · sair' : 'Entrar';
+  document.getElementById('btnCasos').style.display = (contasAtivas && logado) ? '' : 'none';
+  document.getElementById('btnSalvar').style.display = (contasAtivas && logado && historico.length > 0) ? '' : 'none';
+  document.getElementById('btnDossie').style.display = historico.length > 1 ? '' : 'none';
+}
+
+function fecharModal(){ document.getElementById('veu').style.display = 'none'; }
+function abrirModal(titulo, corpoHtml){
+  document.getElementById('modalTitulo').textContent = titulo;
+  document.getElementById('modalCorpo').innerHTML = corpoHtml;
+  document.getElementById('veu').style.display = 'flex';
+}
+
+function abrirConta(){
+  if (sessao && sessao.token){
+    sessao = null; casoAtualId = null;
+    try{ localStorage.removeItem('holmes_sessao'); }catch{}
+    atualizarBarra();
+    return;
+  }
+  mostrarLogin();
+}
+
+function mostrarLogin(registro){
+  abrirModal(registro ? 'Criar conta' : 'Entrar', `
+    <p class="erro-modal" id="erroModal"></p>
+    <input type="email" id="inpEmail" placeholder="seu@email.com" autocomplete="email">
+    <input type="password" id="inpSenha" placeholder="senha (mínimo 8 caracteres)" autocomplete="${registro ? 'new-password' : 'current-password'}">
+    <button class="btn-modal" onclick="autenticarUsuario(${!!registro})">${registro ? 'Criar conta' : 'Entrar'}</button>
+    <p class="alterna">${registro ? 'Já tem conta? <a onclick="mostrarLogin(false)">Entrar</a>' : 'Primeira vez? <a onclick="mostrarLogin(true)">Criar conta</a>'}</p>
+  `);
+}
+
+async function autenticarUsuario(registro){
+  const email = document.getElementById('inpEmail').value.trim();
+  const senha = document.getElementById('inpSenha').value;
+  const erroEl = document.getElementById('erroModal');
+  erroEl.textContent = '';
+  try{
+    const r = await fetch(registro ? '/api/registro' : '/api/login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({email, senha})
+    });
+    const d = await r.json();
+    if(!r.ok){ erroEl.textContent = d.erro || 'Falha na autenticação.'; return; }
+    sessao = { token: d.token, email: d.email };
+    try{ localStorage.setItem('holmes_sessao', JSON.stringify(sessao)); }catch{}
+    fecharModal(); atualizarBarra();
+  }catch{ erroEl.textContent = 'Falha de conexão. Tente de novo.'; }
+}
+
+async function salvarCaso(){
+  if(!sessao) return mostrarLogin();
+  const primeiro = (historico.find(m => m.role === 'user') || {}).content || 'Caso sem título';
+  const titulo = prompt('Nome do caso:', casoAtualId ? undefined : String(primeiro).slice(0, 60));
+  if(titulo === null) return;
+  try{
+    const r = await fetch('/api/casos', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+sessao.token},
+      body: JSON.stringify({ titulo, historico, casoId: casoAtualId })
+    });
+    const d = await r.json();
+    if(!r.ok){ alert(d.erro || 'Falha ao salvar.'); if(r.status===401){sessao=null;atualizarBarra();} return; }
+    casoAtualId = d.id;
+    document.getElementById('btnSalvar').textContent = '💾 Salvo ✓';
+    setTimeout(() => document.getElementById('btnSalvar').textContent = '💾 Salvar', 2200);
+  }catch{ alert('Falha de conexão ao salvar.'); }
+}
+
+async function abrirCasos(){
+  if(!sessao) return mostrarLogin();
+  try{
+    const r = await fetch('/api/casos', { headers:{'Authorization':'Bearer '+sessao.token} });
+    const d = await r.json();
+    if(!r.ok){ if(r.status===401){sessao=null;atualizarBarra();mostrarLogin();} return; }
+    if(!d.casos.length){ abrirModal('Seus casos', '<p style="font-size:.92rem">Nenhum caso salvo ainda. Investigue e clique em 💾 Salvar.</p>'); return; }
+    const itens = d.casos.map(c =>
+      `<li><a onclick="carregarCaso(${c.id})">${escapar(c.titulo)}</a>` +
+      `<button class="apagar" onclick="apagarCaso(${c.id}, this)" title="Apagar">✕</button></li>`
+    ).join('');
+    abrirModal('Seus casos', '<ul class="lista-casos">' + itens + '</ul>');
+  }catch{}
+}
+
+function escapar(t){ const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+
+async function carregarCaso(id){
+  const r = await fetch('/api/casos/'+id, { headers:{'Authorization':'Bearer '+sessao.token} });
+  const d = await r.json();
+  if(!r.ok){ alert(d.erro || 'Falha ao abrir o caso.'); return; }
+  historico.length = 0;
+  transcricao.innerHTML = '';
+  for(const m of d.historico){
+    historico.push(m);
+    const fala = adicionarFala(m.role === 'user' ? 'Você' : 'Holmes', m.content, m.role === 'user' ? 'usuario' : 'holmes');
+    if(m.role === 'assistant') adicionarBotaoContraCheck(fala, m.content);
+  }
+  casoAtualId = d.id;
+  fecharModal(); atualizarBarra();
+}
+
+async function apagarCaso(id, botaoEl){
+  if(!confirm('Apagar este caso definitivamente?')) return;
+  await fetch('/api/casos/'+id, { method:'DELETE', headers:{'Authorization':'Bearer '+sessao.token} });
+  botaoEl.closest('li').remove();
+  if(casoAtualId === id) casoAtualId = null;
+}
+
+// ================= DOSSIÊ EM PDF =================
+async function baixarDossie(){
+  const btn = document.getElementById('btnDossie');
+  btn.disabled = true; btn.textContent = 'Gerando…';
+  try{
+    if(!window.jspdf){
+      await new Promise((ok, falha) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+        s.onload = ok; s.onerror = falha;
+        document.head.appendChild(s);
+      });
+    }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit:'mm', format:'a4' });
+    const margem = 20, largura = 170;
+    let y = 0;
+
+    function cabecalho(){
+      doc.setFillColor(20,17,9); doc.rect(0,0,210,26,'F');
+      doc.setTextColor(194,161,77); doc.setFont('times','bold'); doc.setFontSize(15);
+      doc.text('AGENTE HOLMES', margem, 12);
+      doc.setTextColor(239,230,210); doc.setFont('courier','normal'); doc.setFontSize(7.5);
+      doc.text('DOSSIÊ DE INVESTIGAÇÃO JURÍDICA — ' + new Date().toLocaleDateString('pt-BR') + ' — watson.trustcorp.com.br', margem, 19);
+      y = 36;
+    }
+    function rodape(){
+      const n = doc.internal.getNumberOfPages();
+      for(let i=1;i<=n;i++){
+        doc.setPage(i);
+        doc.setFont('courier','normal'); doc.setFontSize(6.6); doc.setTextColor(120,110,90);
+        doc.text('Este dossiê é apoio técnico gerado por IA e não substitui advogado inscrito na OAB. Confira a jurisprudência nas fontes oficiais.', margem, 288);
+        doc.text('Página ' + i + ' de ' + n, 210-margem, 288, {align:'right'});
+      }
+    }
+    function quebra(alt){ if(y + alt > 278){ doc.addPage(); cabecalho(); } }
+
+    cabecalho();
+    for(const m of historico){
+      const autor = m.role === 'user' ? 'CLIENTE' : 'HOLMES';
+      doc.setFont('courier','bold'); doc.setFontSize(8);
+      doc.setTextColor(m.role === 'user' ? 140 : 90, m.role === 'user' ? 51 : 82, m.role === 'user' ? 48 : 64);
+      quebra(12);
+      doc.text(autor, margem, y); y += 5;
+      doc.setFont('times','normal'); doc.setFontSize(10.2); doc.setTextColor(36,31,21);
+      const linhas = doc.splitTextToSize(String(m.content), largura);
+      for(const linha of linhas){ quebra(6); doc.text(linha, margem, y); y += 5.1; }
+      y += 4;
+    }
+    rodape();
+    doc.save('dossie-agente-holmes-' + new Date().toISOString().slice(0,10) + '.pdf');
+  }catch(e){
+    alert('Falha ao gerar o dossiê. Tente novamente.');
+  }finally{
+    btn.disabled = false; btn.textContent = '📄 Dossiê';
   }
 }
 </script>
