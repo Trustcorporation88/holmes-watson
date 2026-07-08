@@ -10,6 +10,8 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Pool } = require('pg');
+const mammoth = require('mammoth');
+const XLSX = require('xlsx');
 
 const app = express();
 app.use(express.json({ limit: '12mb' }));
@@ -134,17 +136,55 @@ app.post('/api/chat', limitar, async (req, res) => {
 
     const historico = messages.map(m => ({ role: m.role, content: String(m.content).slice(0, 20_000) }));
 
-    // PDF anexado: entra como bloco de documento na última mensagem do usuário
-    if (pdf && pdf.data && ANTHROPIC_KEY) {
-      if (String(pdf.data).length > 8_000_000) {
-        return res.status(400).json({ erro: 'PDF grande demais (limite ~6MB).' });
+    // Arquivo anexado: PDF e imagens vão nativos ao Claude; Word/Excel/CSV são extraídos para texto
+    const arquivo = req.body.arquivo || pdf; // compatibilidade com o campo antigo
+    if (arquivo && arquivo.data) {
+      if (String(arquivo.data).length > 8_000_000) {
+        return res.status(400).json({ erro: 'Arquivo grande demais (limite ~6MB).' });
       }
+      const nome = String(arquivo.name || 'arquivo').slice(0, 120);
+      const ext = nome.toLowerCase().split('.').pop();
       const ultima = historico[historico.length - 1];
-      if (ultima && ultima.role === 'user') {
-        ultima.content = [
-          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdf.data } },
-          { type: 'text', text: ultima.content || 'Analise o documento anexado conforme os módulos aplicáveis.' }
-        ];
+      const textoUsuario = (ultima && typeof ultima.content === 'string' && ultima.content) || 'Analise o documento anexado conforme os módulos aplicáveis.';
+
+      const LIMITE_TEXTO = 60_000;
+      function anexarTexto(extraido, rotulo) {
+        let corpo = String(extraido || '').trim();
+        if (!corpo) return res.status(400).json({ erro: `Não consegui extrair conteúdo de ${nome}.` }) && false;
+        if (corpo.length > LIMITE_TEXTO) corpo = corpo.slice(0, LIMITE_TEXTO) + '\n[... conteúdo truncado por tamanho ...]';
+        ultima.content = `[${rotulo}: "${nome}"]\n\n${corpo}\n\n[Fim do arquivo]\n\n${textoUsuario}`;
+        return true;
+      }
+
+      try {
+        if (ext === 'pdf' && ANTHROPIC_KEY) {
+          ultima.content = [
+            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: arquivo.data } },
+            { type: 'text', text: textoUsuario }
+          ];
+        } else if (['png','jpg','jpeg','webp','gif'].includes(ext) && ANTHROPIC_KEY) {
+          const mapa = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', webp:'image/webp', gif:'image/gif' };
+          ultima.content = [
+            { type: 'image', source: { type: 'base64', media_type: mapa[ext], data: arquivo.data } },
+            { type: 'text', text: 'Leia integralmente o documento na imagem (OCR), transcrevendo os trechos relevantes antes de analisar. ' + textoUsuario }
+          ];
+        } else if (ext === 'docx') {
+          const r = await mammoth.extractRawText({ buffer: Buffer.from(arquivo.data, 'base64') });
+          if (!anexarTexto(r.value, 'Documento Word anexado')) return;
+        } else if (['xlsx','xls','csv'].includes(ext)) {
+          const wb = XLSX.read(Buffer.from(arquivo.data, 'base64'), { type: 'buffer' });
+          const partes = wb.SheetNames.slice(0, 10).map(n => '== Aba: ' + n + ' ==\n' + XLSX.utils.sheet_to_csv(wb.Sheets[n]));
+          if (!anexarTexto(partes.join('\n\n'), 'Planilha anexada (convertida em CSV)')) return;
+        } else if (ext === 'txt') {
+          if (!anexarTexto(Buffer.from(arquivo.data, 'base64').toString('utf8'), 'Arquivo de texto anexado')) return;
+        } else if (['pdf','png','jpg','jpeg','webp','gif'].includes(ext)) {
+          return res.status(400).json({ erro: 'PDF e imagens exigem o investigador Claude ativo neste servidor.' });
+        } else {
+          return res.status(400).json({ erro: 'Formato não suportado. Envie PDF, DOCX, XLSX, XLS, CSV, TXT ou imagem (PNG/JPG/WEBP).' });
+        }
+      } catch (e) {
+        console.error('Falha ao processar anexo:', e.message);
+        return res.status(400).json({ erro: `Não consegui ler o arquivo ${nome}. Ele pode estar corrompido ou protegido por senha.` });
       }
     }
 

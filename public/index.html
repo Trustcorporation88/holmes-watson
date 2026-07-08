@@ -222,8 +222,8 @@ footer .assin{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text
 .contra-check:disabled{opacity:.5;cursor:wait}
 .fala.watson{border-left:2px solid var(--lacre);padding-left:14px}
 .fala.watson .autor{color:var(--lacre)}
-.anexo{border:none;background:transparent;cursor:pointer;font-size:1.1rem;padding:0 6px 0 16px;align-self:center}
-.anexo:hover{transform:scale(1.15)}
+.anexo{border:none;background:var(--papel-2);cursor:pointer;font-size:1.25rem;width:56px;flex:0 0 56px;display:flex;align-items:center;justify-content:center;border-right:1px solid rgba(36,31,21,.15)}
+.anexo:hover{background:rgba(194,161,77,.25)}
 .chip-pdf{font-family:var(--mono);font-size:.66rem;letter-spacing:.08em;color:var(--tinta);background:var(--papel-2);padding:8px 22px;border-top:1px dashed rgba(36,31,21,.25)}
 .chip-pdf button{border:none;background:none;color:var(--lacre);cursor:pointer;font-family:var(--mono);margin-left:10px}
 .mesa-acoes{margin-left:auto;display:flex;gap:8px}
@@ -405,8 +405,8 @@ footer .assin{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text
         </div>
       </div>
       <div class="entrada">
-        <input type="file" id="campoPdf" accept="application/pdf" style="display:none" onchange="anexarPdf(this)">
-        <button class="anexo" onclick="document.getElementById('campoPdf').click()" title="Anexar contrato em PDF" aria-label="Anexar PDF">📎</button>
+        <input type="file" id="campoArquivo" accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,.png,.jpg,.jpeg,.webp,.gif" style="display:none" onchange="anexarArquivo(this)">
+        <button class="anexo" onclick="document.getElementById('campoArquivo').click()" title="Anexar PDF, Word, Excel, CSV ou foto de documento" aria-label="Anexar arquivo">📎</button>
         <textarea id="campoMensagem" placeholder="Descreva o caso, cole a cláusula ou faça a pergunta..." aria-label="Sua mensagem para o Holmes"></textarea>
         <button id="botaoEnviar" onclick="enviar()">Enviar</button>
       </div>
@@ -478,17 +478,25 @@ function usarSugestao(texto){
   document.getElementById('sala').scrollIntoView({behavior:'smooth'});
 }
 
-function anexarPdf(input){
+function iconePorTipo(nome){
+  const ext = nome.toLowerCase().split('.').pop();
+  if(ext === 'pdf') return '📄';
+  if(ext === 'docx') return '📝';
+  if(['xlsx','xls','csv'].includes(ext)) return '📊';
+  if(['png','jpg','jpeg','webp','gif'].includes(ext)) return '🖼';
+  return '📎';
+}
+function anexarArquivo(input){
   const arquivo = input.files[0];
   if(!arquivo) return;
-  if(arquivo.size > 6 * 1024 * 1024){ alert('PDF grande demais — limite de 6MB.'); input.value=''; return; }
+  if(arquivo.size > 6 * 1024 * 1024){ alert('Arquivo grande demais — limite de 6MB.'); input.value=''; return; }
   const leitor = new FileReader();
   leitor.onload = () => {
     pdfAnexado = { name: arquivo.name, data: leitor.result.split(',')[1] };
     const chip = document.getElementById('chipPdf');
     chip.style.display = 'block';
     chip.innerHTML = '';
-    chip.append('📎 ' + arquivo.name + ' anexado ');
+    chip.append(iconePorTipo(arquivo.name) + ' ' + arquivo.name + ' anexado ');
     const x = document.createElement('button');
     x.textContent = '✕ remover';
     x.onclick = removerPdf;
@@ -548,7 +556,7 @@ async function enviar(){
   if((!texto && !pdfAnexado) || botao.disabled) return;
   campo.value = '';
 
-  const rotuloUsuario = pdfAnexado ? (texto || 'Analise o documento.') + '  📎 ' + pdfAnexado.name : texto;
+  const rotuloUsuario = pdfAnexado ? (texto || 'Analise o documento.') + '  ' + iconePorTipo(pdfAnexado.name) + ' ' + pdfAnexado.name : texto;
   adicionarFala('Você', rotuloUsuario, 'usuario');
   historico.push({role:'user', content: texto || 'Analise o documento anexado conforme os módulos aplicáveis.'});
 
@@ -564,7 +572,7 @@ async function enviar(){
     const resposta = await fetch('/api/chat', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ messages: historico, pdf: pdfEnvio, turnstileToken })
+      body: JSON.stringify({ messages: historico, arquivo: pdfEnvio, turnstileToken })
     });
 
     if(!resposta.ok){
