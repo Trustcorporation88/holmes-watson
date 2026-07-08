@@ -434,11 +434,11 @@ footer .assin{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text
 
 <footer>
   <p class="aviso">O Agente Holmes presta apoio técnico-jurídico com inteligência artificial e não substitui advogado inscrito na OAB. Peças e análises devem ser revisadas e subscritas por profissional habilitado; a jurisprudência citada deve ser conferida nas fontes oficiais antes de fundamentar peça protocolada. A estratégia final é sempre decisão do advogado responsável com o cliente.</p>
-  <p class="assin">Agente Holmes · Tributário — Sucessório — Civil — Trabalhista · MMXXVI · v1.6.1</p>
+  <p class="assin">Agente Holmes · Tributário — Sucessório — Civil — Trabalhista · MMXXVI · v1.6.3</p>
 </footer>
 
 <script>
-const VERSAO = '1.6.1';
+const VERSAO = '1.6.3';
 console.log('Agente Holmes — frontend v' + VERSAO);
 const historico = [];
 let revisoraDisponivel = false;
@@ -825,7 +825,18 @@ async function baixarDossie(){
         .replace(/\*\*(.+?)\*\*/g, '$1')
         .replace(/\*(.+?)\*/g, '$1')
         .replace(/^#+\s*/gm, '')
-        .replace(/^---+\s*$/gm, '');
+        .replace(/^---+\s*$/gm, '')
+        // Traduz emojis recorrentes para texto que a fonte do PDF entende
+        .replace(/\u26A0\uFE0F?/g, '[ATENCAO] ')
+        .replace(/\u23F8\uFE0F?/g, '[PAUSA] ')
+        .replace(/[\u2705\u2714]\uFE0F?/g, '- ')
+        .replace(/[\u274C\u26D4]\uFE0F?/g, 'x ')
+        .replace(/\uD83D\uDD0E|\uD83D\uDD0D/g, '')
+        .replace(/[\u2696\u2699\u2757\u2753]\uFE0F?/g, '')
+        // Remove qualquer outro caractere fora do alfabeto que a fonte suporta (emojis, símbolos exóticos)
+        .replace(/[^\x20-\x7E\xA0-\xFF\u2013\u2014\u2018\u2019\u201C\u201D\u2026\n]/g, '')
+        // Normaliza espaços múltiplos que sobram da limpeza
+        .replace(/[ \t]{2,}/g, ' ');
     }
     function corpoPadrao(){ doc.setFont('times','normal'); doc.setFontSize(10.4); doc.setTextColor(TINTA[0],TINTA[1],TINTA[2]); }
     function cabecalho(){
