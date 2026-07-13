@@ -12,6 +12,7 @@ const jwt = require('jsonwebtoken');
 const { Pool } = require('pg');
 const mammoth = require('mammoth');
 const XLSX = require('xlsx');
+const { resolveAgent, listAgents } = require('./oraculo'); // ORÁCULO: 19 agentes especialistas (aditivo)
 
 const app = express();
 app.use(express.json({ limit: '40mb' }));
@@ -184,12 +185,20 @@ async function verificarTurnstile(token, ip) {
   } catch { return false; }
 }
 
+// ---------- ORÁCULO: lista de agentes para o seletor do frontend ----------
+app.get('/api/agentes', (req, res) => res.json({ agentes: listAgents() }));
+
 app.post('/api/chat', limitar, async (req, res) => {
   try {
     const { messages, pdf, turnstileToken } = req.body;
     if (!Array.isArray(messages) || messages.length === 0 || messages.length > 40) {
       return res.status(400).json({ erro: 'Histórico de mensagens inválido.' });
     }
+
+    // ORÁCULO: agente selecionado (dropdown) ou invocado por comando; null = Holmes padrão
+    const ultimaTextual = [...messages].reverse().find(m => m.role === 'user' && typeof m.content === 'string');
+    const agenteOraculo = resolveAgent(ultimaTextual ? ultimaTextual.content : '', req.body.agentId || null);
+    if (agenteOraculo) res.setHeader('X-Oraculo-Agente', encodeURIComponent(agenteOraculo.emoji + ' ' + agenteOraculo.nome));
 
     const ip = req.headers['x-forwarded-for']?.split(',')[0] || req.ip;
     if (!(await verificarTurnstile(turnstileToken, ip))) {
@@ -280,10 +289,10 @@ app.post('/api/chat', limitar, async (req, res) => {
           'anthropic-version': '2023-06-01'
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
+          model: agenteOraculo ? agenteOraculo.model : 'claude-sonnet-4-6',
           max_tokens: 8000,
           stream: true,
-          system: [{ type: 'text', text: PROMPT_HOLMES, cache_control: { type: 'ephemeral' } }],
+          system: [{ type: 'text', text: agenteOraculo ? agenteOraculo.system : PROMPT_HOLMES, cache_control: { type: 'ephemeral' } }],
           tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
           messages: historico
         })
@@ -331,7 +340,7 @@ app.post('/api/chat', limitar, async (req, res) => {
           model: 'deepseek-chat',
           max_tokens: 1200,
           temperature: 0.4,
-          messages: [{ role: 'system', content: PROMPT_HOLMES }, ...historico.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : m.content.map(c => c.text || '[documento]').join(' ') }))]
+          messages: [{ role: 'system', content: agenteOraculo ? agenteOraculo.system : PROMPT_HOLMES }, ...historico.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : m.content.map(c => c.text || '[documento]').join(' ') }))]
         })
       });
       const dados = await resposta.json();

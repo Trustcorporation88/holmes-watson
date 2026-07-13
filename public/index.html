@@ -186,6 +186,15 @@ section{padding:9vh 5vw;max-width:1280px;margin:0 auto}
 .fala.pensando p{font-style:italic;color:var(--tinta-suave)}
 .fala.pensando p::after{content:'…';animation:pulsar 1.2s infinite}
 @keyframes pulsar{0%,100%{opacity:.3}50%{opacity:1}}
+.barra-agentes{
+  display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--papel-2);
+  border-top:1px solid rgba(36,31,21,.25);font-size:.85rem;color:var(--tinta-suave);
+}
+.barra-agentes select{
+  flex:1;max-width:420px;padding:7px 10px;border-radius:6px;border:1px solid rgba(36,31,21,.3);
+  background:var(--papel);color:var(--tinta);font-family:var(--serif-body);font-size:.88rem;cursor:pointer;
+}
+.barra-agentes select:focus{outline:2px solid var(--lacre);outline-offset:1px}
 .entrada{
   display:flex;gap:0;border-top:1px solid rgba(36,31,21,.25);background:var(--papel-2);
 }
@@ -407,6 +416,12 @@ footer .assin{font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;text
           <p>Boa noite. Sente-se — o caso que o trouxe aqui já está estampado na sua expressão. Conte-me os fatos em qualquer ordem; a ordem certa é trabalho meu. Posso analisar uma cláusula, montar uma linha de defesa ou atacar a sua própria tese antes que o adversário o faça.</p>
         </div>
       </div>
+      <div class="barra-agentes">
+        <label for="seletorAgente">🎯</label>
+        <select id="seletorAgente" onchange="trocarAgente()" aria-label="Escolher o agente especialista" title="Holmes é o investigador generalista. Os agentes do Oráculo são especialistas por área.">
+          <option value="">🕵️ Holmes — investigador (padrão)</option>
+        </select>
+      </div>
       <div class="entrada">
         <input type="file" id="campoArquivo" accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,.png,.jpg,.jpeg,.webp,.gif" multiple style="display:none" onchange="anexarArquivo(this)">
         <button class="anexo" onclick="document.getElementById('campoArquivo').click()" title="Anexar PDF, Word, Excel, CSV ou foto de documento" aria-label="Anexar arquivo">📎</button>
@@ -458,6 +473,23 @@ const transcricao = document.getElementById('transcricao');
 const campo = document.getElementById('campoMensagem');
 const botao = document.getElementById('botaoEnviar');
 const luz = document.getElementById('luzStatus');
+
+// ===== ORÁCULO: seletor de agentes especialistas =====
+let agenteAtual = '';
+let nomeAgenteAtual = 'Holmes';
+fetch('/api/agentes').then(r => r.json()).then(d => {
+  const sel = document.getElementById('seletorAgente');
+  (d.agentes || []).forEach(a => {
+    const o = document.createElement('option');
+    o.value = a.id; o.textContent = a.emoji + ' ' + a.nome; o.title = a.descricao;
+    sel.appendChild(o);
+  });
+}).catch(() => {});
+function trocarAgente(){
+  const sel = document.getElementById('seletorAgente');
+  agenteAtual = sel.value;
+  nomeAgenteAtual = sel.value ? sel.options[sel.selectedIndex].textContent : 'Holmes';
+}
 
 fetch('/api/saude').then(r => r.json()).then(s => {
   revisoraDisponivel = !!s.revisora;
@@ -625,15 +657,20 @@ async function enviar(){
 
   botao.disabled = true;
   luz.classList.remove('acesa');
-  const fala = adicionarFala('Holmes', '…', 'holmes');
+  const fala = adicionarFala(nomeAgenteAtual, '…', 'holmes');
   const paragrafo = fala.querySelector('p');
 
   try{
     const resposta = await fetch('/api/chat', {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ messages: historico, arquivos: anexosEnvio, turnstileToken })
+      body: JSON.stringify({ messages: historico, arquivos: anexosEnvio, turnstileToken, agentId: agenteAtual || null })
     });
+
+    // Se um agente do Oráculo respondeu (por seleção ou comando), rotula a fala com ele
+    const cabecalhoAgente = resposta.headers.get('X-Oraculo-Agente');
+    const nomeFalante = cabecalhoAgente ? decodeURIComponent(cabecalhoAgente) : nomeAgenteAtual;
+    fala.querySelector('.autor').textContent = nomeFalante;
 
     if(!resposta.ok){
       const d = await resposta.json().catch(() => ({}));
@@ -657,7 +694,7 @@ async function enviar(){
 
     if(completo.trim()){
       numeroAnalise++;
-      fala.querySelector('.autor').textContent = 'Holmes · Análise nº ' + numeroAnalise;
+      fala.querySelector('.autor').textContent = nomeFalante + ' · Análise nº ' + numeroAnalise;
       historico.push({role:'assistant', content: completo});
       adicionarBotaoContraCheck(fala, completo);
       atualizarBarra();

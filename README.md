@@ -76,3 +76,19 @@ O Claude responde com até ~1.200 tokens por turno e a DeepSeek com até 500 —
 ## Avisos
 
 O Agente Holmes presta apoio técnico-jurídico e não substitui advogado inscrito na OAB. A jurisprudência citada deve ser conferida nas fontes oficiais antes de fundamentar peça protocolada. Ao usar o site com dados reais de clientes, prefira anonimizar os fatos na própria pergunta.
+
+---
+
+## Oráculo — 19 agentes especialistas (v2.1)
+
+Além do Holmes (investigador generalista, padrão), o chat agora tem 19 agentes especialistas selecionáveis no dropdown acima do campo de mensagem, ou invocáveis por comando na própria conversa:
+
+- Atalhos: `/civil`, `/tributario`, `/fiscal`, `/holding`, `/execucao`, `/rj`, `/lgpd`, `/ma`, `/criminal`, `/contratos`, `/societario`, `/imobiliario`, `/bancario`, `/consumidor`, `/ambiental`, `/compliance`, `/marketing`, `/vendas`, `/trabalhista`
+- Ou: `chamar [nome do agente]` (ex.: `chamar carrasco cível`)
+- `execute` ou `oráculo` ativa o Oráculo Master (modo War Room multi-área)
+
+Os agentes herdam toda a infraestrutura existente: anexos (PDF/imagem nativos, Word/Excel extraídos), consulta oficial DataJud, busca na web para confirmar jurisprudência, streaming, contra-check da revisora e cache de prompt.
+
+**Arquivos:** `oraculo.js` (prompts e roteador) + edições mínimas em `server.js` e `public/index.html`. Sem agente selecionado, o comportamento é 100% o anterior (Holmes).
+
+**Variáveis opcionais:** `ORACULO_MODEL` (padrão `claude-sonnet-4-6`) e `ORACULO_MODEL_HEAVY` (padrão `claude-opus-4-8`, usado pelos 8 agentes de raciocínio pesado: Master, Deal Killer, Auditor Letal, Arquiteto Fiscal, Executor RJ, Predador Criminal, Predador Societário e Holding). Atenção ao custo do Opus em conversas com PDFs longos.
