@@ -92,3 +92,13 @@ Os agentes herdam toda a infraestrutura existente: anexos (PDF/imagem nativos, W
 **Arquivos:** `oraculo.js` (prompts e roteador) + edições mínimas em `server.js` e `public/index.html`. Sem agente selecionado, o comportamento é 100% o anterior (Holmes).
 
 **Variáveis opcionais:** `ORACULO_MODEL` (padrão `claude-sonnet-4-6`) e `ORACULO_MODEL_HEAVY` (padrão `claude-opus-4-8`, usado pelos 8 agentes de raciocínio pesado: Master, Deal Killer, Auditor Letal, Arquiteto Fiscal, Executor RJ, Predador Criminal, Predador Societário e Holding). Atenção ao custo do Opus em conversas com PDFs longos.
+
+## Escavador — fallback pago do DataJud (opcional)
+
+Quando o DataJud falha (timeout, não indexado), o servidor tenta automaticamente a API do Escavador — que coleta direto dos tribunais — e injeta o resultado na análise, identificando a fonte.
+
+**Para ativar:** gere o token no painel https://api.escavador.com e configure a variável `ESCAVADOR_TOKEN` no Railway. Sem a variável, o módulo fica completamente inerte (comportamento atual preservado).
+
+**Custo:** cada consulta ao Escavador consome créditos. O módulo tem cache de 30 minutos por processo para evitar cobrança repetida na mesma conversa. O fallback só dispara quando o DataJud falha — o caminho gratuito continua sendo o primeiro.
+
+**Próxima fase possível:** download automático dos autos (peças) via certificado digital A1 de advogado cadastrado no painel do Escavador — não implementado; hoje a íntegra entra por upload no chat.

@@ -13,6 +13,7 @@ const { Pool } = require('pg');
 const mammoth = require('mammoth');
 const XLSX = require('xlsx');
 const { resolveAgent, listAgents } = require('./oraculo'); // ORÁCULO: 19 agentes especialistas (aditivo)
+const { consultarEscavador, escavadorAtivo } = require('./escavador'); // ESCAVADOR: fallback pago do DataJud (ativa só com ESCAVADOR_TOKEN)
 
 const app = express();
 app.use(express.json({ limit: '40mb' }));
@@ -235,11 +236,16 @@ app.post('/api/chat', limitar, async (req, res) => {
         const dj = await consultarDataJud(achado[0]);
         if (dj.ok) {
           ultimaMsg.content += `\n\n[CONSULTA OFICIAL DATAJUD/CNJ — processo ${achado[0]}]\n${dj.resumo}\n[Fim da consulta oficial. A íntegra das peças não está disponível por esta via; peça upload se precisar do conteúdo das decisões.]`;
+        } else if (escavadorAtivo() && (await consultarEscavador(achado[0])).ok) {
+          // ESCAVADOR: fallback pago — o DataJud falhou, mas o Escavador respondeu (resultado vem do cache da chamada acima)
+          const esc = await consultarEscavador(achado[0]);
+          ultimaMsg.content += `\n\n[CONSULTA VIA ESCAVADOR — processo ${achado[0]} (a consulta oficial DataJud/CNJ falhou: ${dj.motivo}; estes dados vêm da base do Escavador, que coleta diretamente dos tribunais)]\n${esc.resumo}\n[Fim da consulta. A íntegra das peças não está disponível por esta via; para o conteúdo das decisões, peça upload dos PDFs pelo 📎.]`;
         } else {
           const explicacao = dj.motivo === 'nao_indexado'
             ? 'o processo existe no formato correto mas NÃO está indexado na base pública do CNJ (comum em processos recentes, em segredo de justiça ou com indexação atrasada)'
             : `a consulta falhou tecnicamente mesmo após 3 tentativas (motivo: ${dj.motivo})`;
-          ultimaMsg.content += `\n\n[Consulta ao DataJud/CNJ para o processo ${achado[0]}: ${explicacao}. NÃO invente andamentos. Informe o usuário com essa causa específica e ORIENTE O CAMINHO COMPLETO: mesmo quando a consulta funciona, o DataJud entrega apenas metadados e movimentações — NUNCA a íntegra dos autos. Para análise das decisões e peças (conteúdo real), o usuário deve baixar os PDFs no portal do tribunal (e-SAJ/PJe/eproc, consulta pública ou com login de advogado) e ANEXAR no chat pelo botão 📎 — os documentos são lidos na íntegra. Sugira as peças mais úteis para o caso em discussão (ex.: decisão específica, contrato, edital, certidão de intimação).]`;
+          const notaEscavador = escavadorAtivo() ? ' A consulta de fallback via Escavador também não retornou dados.' : '';
+          ultimaMsg.content += `\n\n[Consulta ao DataJud/CNJ para o processo ${achado[0]}: ${explicacao}.${notaEscavador} NÃO invente andamentos. Informe o usuário com essa causa específica e ORIENTE O CAMINHO COMPLETO: mesmo quando a consulta funciona, o DataJud entrega apenas metadados e movimentações — NUNCA a íntegra dos autos. Para análise das decisões e peças (conteúdo real), o usuário deve baixar os PDFs no portal do tribunal (e-SAJ/PJe/eproc, consulta pública ou com login de advogado) e ANEXAR no chat pelo botão 📎 — os documentos são lidos na íntegra. Sugira as peças mais úteis para o caso em discussão (ex.: decisão específica, contrato, edital, certidão de intimação).]`;
         }
       }
     }
