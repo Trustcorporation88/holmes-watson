@@ -128,41 +128,61 @@ function aliasTribunal(digitos){
   if (j === '5') return 'trt' + Number(tr);
   return null;
 }
+const cacheDataJud = new Map(); // digitos → { quando, resultado } — evita repetir a consulta a cada mensagem
 async function consultarDataJud(numeroCNJ){
   const digitos = numeroCNJ.replace(/\D/g, '');
   if (digitos.length !== 20) return { ok: false, motivo: 'numero_invalido' };
   const alias = aliasTribunal(digitos);
   if (!alias) return { ok: false, motivo: 'tribunal_nao_mapeado' };
-  const controle = new AbortController();
-  const timer = setTimeout(() => controle.abort(), 8000);
-  try {
-    const r = await fetch(`https://api-publica.datajud.cnj.jus.br/api_publica_${alias}/_search`, {
-      method: 'POST',
-      signal: controle.signal,
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'APIKey ' + DATAJUD_KEY },
-      body: JSON.stringify({ query: { match: { numeroProcesso: digitos } }, size: 1 })
-    });
-    if (!r.ok) {
-      const corpo = (await r.text()).slice(0, 300);
-      console.error(`DataJud HTTP ${r.status} [${alias}]:`, corpo);
-      return { ok: false, motivo: 'http_' + r.status, alias, detalhe: corpo };
+
+  // Cache de 10 minutos para consultas bem-sucedidas
+  const guardado = cacheDataJud.get(digitos);
+  if (guardado && Date.now() - guardado.quando < 600_000) return guardado.resultado;
+
+  // O DataJud público oscila: até 3 tentativas com timeout crescente (8s → 12s → 16s)
+  let ultimaFalha = { ok: false, motivo: 'rede' };
+  for (let tentativa = 0; tentativa < 3; tentativa++) {
+    const controle = new AbortController();
+    const timer = setTimeout(() => controle.abort(), 8000 + tentativa * 4000);
+    try {
+      const r = await fetch(`https://api-publica.datajud.cnj.jus.br/api_publica_${alias}/_search`, {
+        method: 'POST',
+        signal: controle.signal,
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'APIKey ' + DATAJUD_KEY },
+        body: JSON.stringify({ query: { match: { numeroProcesso: digitos } }, size: 1 })
+      });
+      if (!r.ok) {
+        const corpo = (await r.text()).slice(0, 300);
+        console.error(`DataJud HTTP ${r.status} [${alias}] tentativa ${tentativa + 1}:`, corpo);
+        ultimaFalha = { ok: false, motivo: 'http_' + r.status, alias, detalhe: corpo };
+        if (r.status >= 400 && r.status < 500) break; // 4xx não melhora com retry
+        continue; // 5xx: tenta de novo
+      }
+      const d = await r.json();
+      const p = d?.hits?.hits?.[0]?._source;
+      if (!p) {
+        const resultado = { ok: false, motivo: 'nao_indexado', alias, total: d?.hits?.total?.value ?? 0 };
+        cacheDataJud.set(digitos, { quando: Date.now(), resultado }); // não indexado também entra no cache
+        return resultado;
+      }
+      const movs = (p.movimentos || []).slice(-30).map(m => `${(m.dataHora || '').slice(0,10)} — ${m.nome}${(m.complementosTabelados||[]).map(c=>' ('+c.nome+')').join('')}`);
+      const resultado = { ok: true, alias, resumo: [
+        `Tribunal: ${alias.toUpperCase()} | Classe: ${p.classe?.nome || '?'} | Órgão julgador: ${p.orgaoJulgador?.nome || '?'}`,
+        `Ajuizamento: ${(p.dataAjuizamento || '').slice(0,10)} | Grau: ${p.grau || '?'} | Formato: ${p.formato?.nome || '?'}`,
+        `Assuntos: ${(p.assuntos || []).map(a => a.nome).join('; ') || '?'}`,
+        `Últimas movimentações (${movs.length}):`,
+        ...movs
+      ].join('\n') };
+      cacheDataJud.set(digitos, { quando: Date.now(), resultado });
+      return resultado;
+    } catch (e) {
+      console.error(`DataJud exceção (tentativa ${tentativa + 1}/3):`, e.message);
+      ultimaFalha = { ok: false, motivo: e.name === 'AbortError' ? 'timeout' : 'rede', detalhe: e.message };
+      // segue para a próxima tentativa
     }
-    const d = await r.json();
-    const p = d?.hits?.hits?.[0]?._source;
-    if (!p) return { ok: false, motivo: 'nao_indexado', alias, total: d?.hits?.total?.value ?? 0 };
-    const movs = (p.movimentos || []).slice(-30).map(m => `${(m.dataHora || '').slice(0,10)} — ${m.nome}${(m.complementosTabelados||[]).map(c=>' ('+c.nome+')').join('')}`);
-    return { ok: true, alias, resumo: [
-      `Tribunal: ${alias.toUpperCase()} | Classe: ${p.classe?.nome || '?'} | Órgão julgador: ${p.orgaoJulgador?.nome || '?'}`,
-      `Ajuizamento: ${(p.dataAjuizamento || '').slice(0,10)} | Grau: ${p.grau || '?'} | Formato: ${p.formato?.nome || '?'}`,
-      `Assuntos: ${(p.assuntos || []).map(a => a.nome).join('; ') || '?'}`,
-      `Últimas movimentações (${movs.length}):`,
-      ...movs
-    ].join('\n') };
-  } catch (e) {
-    console.error('DataJud exceção:', e.message);
-    return { ok: false, motivo: e.name === 'AbortError' ? 'timeout' : 'rede', detalhe: e.message };
+    finally { clearTimeout(timer); }
   }
-  finally { clearTimeout(timer); }
+  return ultimaFalha;
 }
 
 // Endpoint de diagnóstico: teste direto no navegador → /api/datajud/NUMERO
@@ -218,8 +238,8 @@ app.post('/api/chat', limitar, async (req, res) => {
         } else {
           const explicacao = dj.motivo === 'nao_indexado'
             ? 'o processo existe no formato correto mas NÃO está indexado na base pública do CNJ (comum em processos recentes, em segredo de justiça ou com indexação atrasada)'
-            : `a consulta falhou tecnicamente (motivo: ${dj.motivo})`;
-          ultimaMsg.content += `\n\n[Consulta ao DataJud/CNJ para o processo ${achado[0]}: ${explicacao}. NÃO invente andamentos; informe o usuário com essa causa específica e peça a movimentação (print/cópia do e-SAJ) ou as peças por upload.]`;
+            : `a consulta falhou tecnicamente mesmo após 3 tentativas (motivo: ${dj.motivo})`;
+          ultimaMsg.content += `\n\n[Consulta ao DataJud/CNJ para o processo ${achado[0]}: ${explicacao}. NÃO invente andamentos. Informe o usuário com essa causa específica e ORIENTE O CAMINHO COMPLETO: mesmo quando a consulta funciona, o DataJud entrega apenas metadados e movimentações — NUNCA a íntegra dos autos. Para análise das decisões e peças (conteúdo real), o usuário deve baixar os PDFs no portal do tribunal (e-SAJ/PJe/eproc, consulta pública ou com login de advogado) e ANEXAR no chat pelo botão 📎 — os documentos são lidos na íntegra. Sugira as peças mais úteis para o caso em discussão (ex.: decisão específica, contrato, edital, certidão de intimação).]`;
         }
       }
     }
