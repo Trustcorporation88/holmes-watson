@@ -28,6 +28,11 @@ const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY; // opcional
 const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY; // opcional (anti-bot)
 const TURNSTILE_SECRET = process.env.TURNSTILE_SECRET;     // opcional (anti-bot)
 const DATABASE_URL = process.env.DATABASE_URL;              // opcional (login e casos salvos)
+// Contas fechadas: só admin + 1 cliente (criados pelas variáveis de ambiente)
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const CLIENT_EMAIL = (process.env.CLIENT_EMAIL || '').trim().toLowerCase();
+const CLIENT_PASSWORD = process.env.CLIENT_PASSWORD || '';
 // Chave PÚBLICA da API DataJud, publicada pelo próprio CNJ em datajud-wiki.cnj.jus.br (pode ser sobrescrita por env)
 const DATAJUD_KEY = process.env.DATAJUD_API_KEY || 'cDZHYzlZa0JadVREZDJCendQbXY6SkJlTzNjLV9TRENyQk1RdnFKZGRQdw==';
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex'); // defina JWT_SECRET para sessões sobreviverem a redeploys
@@ -44,6 +49,7 @@ if (DATABASE_URL) {
       id SERIAL PRIMARY KEY,
       email TEXT UNIQUE NOT NULL,
       senha_hash TEXT NOT NULL,
+      papel TEXT NOT NULL DEFAULT 'cliente',
       criado_em TIMESTAMPTZ DEFAULT now()
     );
     CREATE TABLE IF NOT EXISTS casos (
@@ -54,8 +60,35 @@ if (DATABASE_URL) {
       criado_em TIMESTAMPTZ DEFAULT now(),
       atualizado_em TIMESTAMPTZ DEFAULT now()
     );
-  `).then(() => console.log('Banco pronto: usuarios e casos'))
+  `)
+    .then(() => pool.query(`ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS papel TEXT NOT NULL DEFAULT 'cliente'`))
+    .then(() => garantirContas())
+    .then(() => console.log('Banco pronto: usuarios e casos'))
     .catch(e => { console.error('Falha ao preparar o banco:', e.message); pool = null; });
+}
+
+async function garantirContas() {
+  const contas = [
+    { email: ADMIN_EMAIL, senha: ADMIN_PASSWORD, papel: 'admin' },
+    { email: CLIENT_EMAIL, senha: CLIENT_PASSWORD, papel: 'cliente' }
+  ];
+  for (const c of contas) {
+    if (!c.email || !c.senha) {
+      console.warn(`Conta ${c.papel}: defina o e-mail e a senha nas variáveis de ambiente.`);
+      continue;
+    }
+    if (c.senha.length < 8) {
+      console.error(`Conta ${c.papel} (${c.email}): a senha precisa de ao menos 8 caracteres.`);
+      continue;
+    }
+    const hash = await bcrypt.hash(c.senha, 10);
+    await pool.query(
+      `INSERT INTO usuarios (email, senha_hash, papel) VALUES ($1,$2,$3)
+       ON CONFLICT (email) DO UPDATE SET senha_hash = EXCLUDED.senha_hash, papel = EXCLUDED.papel`,
+      [c.email, hash, c.papel]
+    );
+    console.log(`Conta ${c.papel} pronta: ${c.email}`);
+  }
 }
 
 function autenticar(req, res, next) {
@@ -67,6 +100,12 @@ function autenticar(req, res, next) {
   } catch {
     res.status(401).json({ erro: 'Sessão inválida ou expirada. Entre novamente.' });
   }
+}
+
+/** Com banco ativo, o chat exige login. Sem DATABASE_URL, permanece aberto para testes locais. */
+function exigirLoginSeHouverContas(req, res, next) {
+  if (!pool) return next();
+  return autenticar(req, res, next);
 }
 const PORT = process.env.PORT || 3000;
 
@@ -209,7 +248,7 @@ async function verificarTurnstile(token, ip) {
 // ---------- ORÁCULO: lista de agentes para o seletor do frontend ----------
 app.get('/api/agentes', (req, res) => res.json({ agentes: listAgents() }));
 
-app.post('/api/chat', limitar, async (req, res) => {
+app.post('/api/chat', limitar, exigirLoginSeHouverContas, async (req, res) => {
   try {
     const { messages, pdf, turnstileToken } = req.body;
     if (!Array.isArray(messages) || messages.length === 0 || messages.length > 40) {
@@ -382,7 +421,7 @@ app.post('/api/chat', limitar, async (req, res) => {
 });
 
 // ---------- /api/contracheck — DeepSeek, a revisora cega ----------
-app.post('/api/contracheck', limitar, async (req, res) => {
+app.post('/api/contracheck', limitar, exigirLoginSeHouverContas, async (req, res) => {
   try {
     // Revisão cruzada exige dois provedores distintos: sem a Anthropic, a DeepSeek estaria revisando a si mesma.
     if (!DEEPSEEK_KEY || !ANTHROPIC_KEY) return res.json({ disponivel: false });
@@ -428,22 +467,9 @@ app.post('/api/contracheck', limitar, async (req, res) => {
 });
 
 
-// ---------- Contas e casos salvos ----------
-app.post('/api/registro', limitar, async (req, res) => {
-  try {
-    if (!pool) return res.status(503).json({ erro: 'Contas desativadas neste servidor.' });
-    const email = String(req.body.email || '').trim().toLowerCase();
-    const senha = String(req.body.senha || '');
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json({ erro: 'E-mail inválido.' });
-    if (senha.length < 8) return res.status(400).json({ erro: 'A senha precisa de ao menos 8 caracteres.' });
-    const hash = await bcrypt.hash(senha, 10);
-    const r = await pool.query('INSERT INTO usuarios (email, senha_hash) VALUES ($1,$2) RETURNING id', [email, hash]);
-    const token = jwt.sign({ id: r.rows[0].id, email }, JWT_SECRET, { expiresIn: '30d' });
-    res.json({ token, email });
-  } catch (e) {
-    if (e.code === '23505') return res.status(409).json({ erro: 'Este e-mail já tem conta. Use Entrar.' });
-    console.error(e); res.status(500).json({ erro: 'Falha ao criar a conta.' });
-  }
+// ---------- Contas e casos salvos (cadastro público fechado — só admin + 1 cliente via env) ----------
+app.post('/api/registro', limitar, async (_req, res) => {
+  res.status(403).json({ erro: 'Cadastro fechado. Use a conta fornecida pelo administrador.' });
 });
 
 app.post('/api/login', limitar, async (req, res) => {
@@ -451,12 +477,13 @@ app.post('/api/login', limitar, async (req, res) => {
     if (!pool) return res.status(503).json({ erro: 'Contas desativadas neste servidor.' });
     const email = String(req.body.email || '').trim().toLowerCase();
     const senha = String(req.body.senha || '');
-    const r = await pool.query('SELECT id, senha_hash FROM usuarios WHERE email = $1', [email]);
+    const r = await pool.query('SELECT id, senha_hash, papel FROM usuarios WHERE email = $1', [email]);
     if (!r.rows[0] || !(await bcrypt.compare(senha, r.rows[0].senha_hash))) {
       return res.status(401).json({ erro: 'E-mail ou senha incorretos.' });
     }
-    const token = jwt.sign({ id: r.rows[0].id, email }, JWT_SECRET, { expiresIn: '30d' });
-    res.json({ token, email });
+    const { id, papel } = r.rows[0];
+    const token = jwt.sign({ id, email, papel }, JWT_SECRET, { expiresIn: '30d' });
+    res.json({ token, email, papel });
   } catch (e) { console.error(e); res.status(500).json({ erro: 'Falha no login.' }); }
 });
 

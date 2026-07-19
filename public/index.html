@@ -497,6 +497,7 @@ fetch('/api/saude').then(r => r.json()).then(s => {
   if(s.turnstileSiteKey){ carregarTurnstile(s.turnstileSiteKey); }
   contasAtivas = !!s.contas;
   atualizarBarra();
+  if(contasAtivas && !(sessao && sessao.token)) mostrarLogin();
 }).catch(() => {});
 
 function carregarTurnstile(sitekey){
@@ -625,16 +626,31 @@ function adicionarBotaoContraCheck(falaHolmes, textoResposta){
   falaHolmes.appendChild(b);
 }
 
+function cabecalhosAuth(extra){
+  const h = Object.assign({'Content-Type':'application/json'}, extra || {});
+  if(sessao && sessao.token) h['Authorization'] = 'Bearer ' + sessao.token;
+  return h;
+}
+
+function sessaoExpirada(){
+  sessao = null; casoAtualId = null;
+  try{ localStorage.removeItem('holmes_sessao'); }catch{}
+  atualizarBarra();
+  mostrarLogin();
+}
+
 async function contraCheck(botaoCC, textoResposta){
+  if(contasAtivas && !(sessao && sessao.token)) return mostrarLogin();
   botaoCC.disabled = true;
   botaoCC.textContent = 'Revisando…';
   try{
     const r = await fetch('/api/contracheck', {
       method:'POST',
-      headers:{'Content-Type':'application/json'},
+      headers: cabecalhosAuth(),
       body: JSON.stringify({ texto: textoResposta })
     });
     const dados = await r.json();
+    if(r.status === 401){ sessaoExpirada(); return; }
     botaoCC.remove();
     adicionarFala('Watson — revisora cega', dados.parecer || dados.erro || 'Revisão indisponível no momento.', 'holmes watson');
   } catch(e){
@@ -646,6 +662,7 @@ async function contraCheck(botaoCC, textoResposta){
 async function enviar(){
   const texto = campo.value.trim();
   if((!texto && !anexos.length) || botao.disabled) return;
+  if(contasAtivas && !(sessao && sessao.token)) return mostrarLogin();
   campo.value = '';
 
   const rotuloUsuario = anexos.length ? (texto || 'Analise os documentos.') + '  ' + anexos.map(a => iconePorTipo(a.name) + ' ' + a.name).join('  ') : texto;
@@ -663,7 +680,7 @@ async function enviar(){
   try{
     const resposta = await fetch('/api/chat', {
       method:'POST',
-      headers:{'Content-Type':'application/json'},
+      headers: cabecalhosAuth(),
       body: JSON.stringify({ messages: historico, arquivos: anexosEnvio, turnstileToken, agentId: agenteAtual || null })
     });
 
@@ -674,6 +691,7 @@ async function enviar(){
 
     if(!resposta.ok){
       const d = await resposta.json().catch(() => ({}));
+      if(resposta.status === 401){ sessaoExpirada(); paragrafo.textContent = 'Sessão expirada. Entre novamente.'; historico.pop(); return; }
       paragrafo.textContent = d.erro || 'Curioso — a linha de comunicação falhou. Reformule e tentaremos novamente.';
       historico.pop();
       return;
@@ -728,7 +746,13 @@ function mostrarEl(id, condicao){ const e = el(id); if(e) e.style.display = cond
 function atualizarBarra(){
   const logado = !!(sessao && sessao.token);
   mostrarEl('btnConta', contasAtivas);
-  if(el('btnConta')) el('btnConta').textContent = logado ? sessao.email.split('@')[0] + ' · sair' : 'Entrar';
+  if(el('btnConta')){
+    if(!logado) el('btnConta').textContent = 'Entrar';
+    else {
+      const rotulo = sessao.papel === 'admin' ? 'admin' : sessao.email.split('@')[0];
+      el('btnConta').textContent = rotulo + ' · sair';
+    }
+  }
   mostrarEl('btnCasos', contasAtivas && logado);
   mostrarEl('btnSalvar', contasAtivas && logado && historico.length > 0);
   mostrarEl('btnDossie', historico.length > 1);
@@ -752,29 +776,29 @@ function abrirConta(){
   mostrarLogin();
 }
 
-function mostrarLogin(registro){
-  abrirModal(registro ? 'Criar conta' : 'Entrar', `
+function mostrarLogin(){
+  abrirModal('Entrar', `
     <p class="erro-modal" id="erroModal"></p>
     <input type="email" id="inpEmail" placeholder="seu@email.com" autocomplete="email">
-    <input type="password" id="inpSenha" placeholder="senha (mínimo 8 caracteres)" autocomplete="${registro ? 'new-password' : 'current-password'}">
-    <button class="btn-modal" onclick="autenticarUsuario(${!!registro})">${registro ? 'Criar conta' : 'Entrar'}</button>
-    <p class="alterna">${registro ? 'Já tem conta? <a onclick="mostrarLogin(false)">Entrar</a>' : 'Primeira vez? <a onclick="mostrarLogin(true)">Criar conta</a>'}</p>
+    <input type="password" id="inpSenha" placeholder="senha" autocomplete="current-password">
+    <button class="btn-modal" onclick="autenticarUsuario()">Entrar</button>
+    <p class="alterna">Acesso restrito — use a conta fornecida pelo administrador.</p>
   `);
 }
 
-async function autenticarUsuario(registro){
+async function autenticarUsuario(){
   const email = document.getElementById('inpEmail').value.trim();
   const senha = document.getElementById('inpSenha').value;
   const erroEl = document.getElementById('erroModal');
   erroEl.textContent = '';
   try{
-    const r = await fetch(registro ? '/api/registro' : '/api/login', {
+    const r = await fetch('/api/login', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({email, senha})
     });
     const d = await r.json();
     if(!r.ok){ erroEl.textContent = d.erro || 'Falha na autenticação.'; return; }
-    sessao = { token: d.token, email: d.email };
+    sessao = { token: d.token, email: d.email, papel: d.papel || 'cliente' };
     try{ localStorage.setItem('holmes_sessao', JSON.stringify(sessao)); }catch{}
     fecharModal(); atualizarBarra();
   }catch{ erroEl.textContent = 'Falha de conexão. Tente de novo.'; }
