@@ -16,7 +16,7 @@ const { resolveAgent, listAgents } = require('./oraculo'); // ORÁCULO: 19 agent
 const { consultarEscavador, escavadorAtivo } = require('./escavador'); // ESCAVADOR: fallback pago do DataJud (ativa só com ESCAVADOR_TOKEN)
 
 const app = express();
-app.use(express.json({ limit: '40mb' }));
+app.use(express.json({ limit: '150mb' }));
 app.use(express.static(path.join(__dirname, 'public'), {
   setHeaders: (res, caminho) => {
     if (caminho.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache, must-revalidate');
@@ -298,7 +298,7 @@ app.post('/api/chat', limitar, exigirLoginSeHouverContas, async (req, res) => {
       const nome = String(arquivo.name || 'arquivo').slice(0, 120);
       const ext = nome.toLowerCase().split('.').pop();
       const tamanhoMB = String(arquivo.data).length * 0.75 / 1_048_576;
-      const teto = ext === 'pdf' ? 20 : (['png','jpg','jpeg','webp','gif'].includes(ext) ? 5 : 15);
+      const teto = ext === 'pdf' ? 100 : (['png','jpg','jpeg','webp','gif'].includes(ext) ? 5 : 15);
       if (tamanhoMB > teto) {
         return res.status(400).json({ erro: `"${nome}" tem ${tamanhoMB.toFixed(1)}MB e excede o limite de ${teto}MB para .${ext}.` });
       }

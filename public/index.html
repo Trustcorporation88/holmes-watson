@@ -540,8 +540,8 @@ function anexarArquivo(input){
   for(const arquivo of Array.from(input.files)){
     if(anexos.length >= 5){ alert('Máximo de 5 anexos por mensagem.'); break; }
     const ext = extensao(arquivo.name);
-    const teto = ext === 'pdf' ? 20 : (EXT_IMAGEM.includes(ext) ? 30 : 15);
-    if(arquivo.size > teto * 1024 * 1024){ alert(arquivo.name + ' excede ' + (ext==='pdf'?20:15) + 'MB.'); continue; }
+    const teto = ext === 'pdf' ? 100 : (EXT_IMAGEM.includes(ext) ? 30 : 15);
+    if(arquivo.size > teto * 1024 * 1024){ alert(arquivo.name + ' excede ' + teto + 'MB.'); continue; }
     if(EXT_IMAGEM.includes(ext) && ext !== 'gif' && arquivo.size > 3 * 1024 * 1024){
       comprimirImagem(arquivo);
     } else {
