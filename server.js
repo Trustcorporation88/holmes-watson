@@ -1,6 +1,7 @@
 // ============================================================
 // AGENTE HOLMES — Backend (Railway)
-// Claude = investigador principal | DeepSeek = revisora cega (opcional)
+// Investigador: Claude → OpenAI → DeepSeek (fallback em cascata)
+// DeepSeek também atua como revisora cega (contra-check), se houver outra IA.
 // As chaves vivem SOMENTE aqui, em variáveis de ambiente.
 // ============================================================
 
@@ -24,7 +25,13 @@ app.use(express.static(path.join(__dirname, 'public'), {
 }));
 
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
-const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY; // opcional
+const OPENAI_KEY = process.env.OPENAI_API_KEY; // opcional — fallback / alternativa ao Claude
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o';
+const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY; // opcional — último fallback + revisora cega
+const ANTHROPIC_FILES_BETA = 'files-api-2025-04-14';
+// Acima disso o PDF vai pela Files API (Messages API limita o body ~32MB com base64)
+const CLAUDE_INLINE_PDF_MAX_MB = 12;
+const OPENAI_PDF_MAX_MB = 45;
 const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY; // opcional (anti-bot)
 const TURNSTILE_SECRET = process.env.TURNSTILE_SECRET;     // opcional (anti-bot)
 const DATABASE_URL = process.env.DATABASE_URL;              // opcional (login e casos salvos)
@@ -245,6 +252,237 @@ async function verificarTurnstile(token, ip) {
   } catch { return false; }
 }
 
+function limparBase64(data) {
+  let s = String(data || '').trim();
+  const i = s.indexOf('base64,');
+  if (i !== -1) s = s.slice(i + 7);
+  else if (s.includes(',')) s = s.split(',').pop();
+  return s.replace(/\s/g, '');
+}
+
+function pdfValido(b64) {
+  try {
+    const head = Buffer.from(b64.slice(0, 48), 'base64');
+    return head.slice(0, 5).toString('latin1') === '%PDF-';
+  } catch { return false; }
+}
+
+/** Sobe arquivo binário na Files API da Anthropic e devolve o file_id. */
+async function uploadArquivoAnthropic(buffer, nome, mimeType) {
+  const form = new FormData();
+  form.append('file', new Blob([buffer], { type: mimeType }), nome);
+  const r = await fetch('https://api.anthropic.com/v1/files', {
+    method: 'POST',
+    headers: {
+      'x-api-key': ANTHROPIC_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': ANTHROPIC_FILES_BETA
+    },
+    body: form
+  });
+  const texto = await r.text();
+  if (!r.ok) {
+    const err = new Error(extrairMsgErroApi(texto) || `Files API HTTP ${r.status}`);
+    err.status = r.status;
+    err.corpo = texto;
+    throw err;
+  }
+  const meta = JSON.parse(texto);
+  if (!meta.id) throw new Error('Files API respondeu sem file_id.');
+  return meta.id;
+}
+
+/**
+ * PDFs grandes demais para base64 na Messages API são trocados por file_id.
+ * Mantém o histórico original intacto para fallback OpenAI.
+ */
+async function historicoParaClaudeComFiles(historico) {
+  let usouFile = false;
+  const out = [];
+  for (const m of historico) {
+    if (typeof m.content !== 'object' || !Array.isArray(m.content)) {
+      out.push(m);
+      continue;
+    }
+    const blocos = [];
+    for (const b of m.content) {
+      if (b.type === 'document' && b.source?.type === 'base64' && b.source.data) {
+        const bytes = Buffer.from(b.source.data, 'base64');
+        const mb = bytes.length / 1_048_576;
+        if (mb > CLAUDE_INLINE_PDF_MAX_MB) {
+          const fileId = await uploadArquivoAnthropic(bytes, b.filename || 'documento.pdf', 'application/pdf');
+          usouFile = true;
+          blocos.push({
+            type: 'document',
+            title: b.filename || 'documento.pdf',
+            source: { type: 'file', file_id: fileId }
+          });
+          continue;
+        }
+        blocos.push({
+          type: 'document',
+          title: b.filename || undefined,
+          source: b.source
+        });
+        continue;
+      }
+      blocos.push(b);
+    }
+    out.push({ role: m.role, content: blocos });
+  }
+  return { historico: out, usouFile };
+}
+
+function extrairMsgErroApi(corpo) {
+  try {
+    const j = JSON.parse(corpo);
+    return j?.error?.message || j?.message || '';
+  } catch { return String(corpo || '').slice(0, 300); }
+}
+
+function mensagemErroAnthropic(status, corpo) {
+  const msg = extrairMsgErroApi(corpo);
+  const m = msg.toLowerCase();
+  if (m.includes('could not process pdf') || m.includes('invalid pdf') || m.includes('unable to process pdf')) {
+    return 'Não consegui processar este PDF no Claude. Causas comuns: senha (e-SAJ/PJe), arquivo corrompido ou escaneamento pesado.';
+  }
+  if (m.includes('too large') || m.includes('request_too_large') || m.includes('request size') || (m.includes('maximum') && m.includes('page')) || status === 413) {
+    return 'O PDF é grande demais ou tem páginas demais para o Claude. Tente um arquivo menor ou divida o documento.';
+  }
+  if (m.includes('credit') || m.includes('billing') || m.includes('balance') || status === 402) {
+    return 'Cota Anthropic esgotada ou cobrança pendente.';
+  }
+  if (m.includes('rate') || status === 429) return 'Rate limit da Anthropic. Aguarde um minuto.';
+  if (m.includes('web search') && (m.includes('not enabled') || m.includes('disabled'))) {
+    return 'Busca na web da Anthropic desabilitada na organização.';
+  }
+  if (status === 401 || m.includes('invalid x-api-key') || m.includes('authentication')) {
+    return 'ANTHROPIC_API_KEY inválida ou expirada.';
+  }
+  if (m.includes('overloaded') || status === 529) return 'Anthropic sobrecarregada.';
+  return msg ? `Falha Anthropic: ${msg.slice(0, 200)}` : 'Claude indisponível.';
+}
+
+function mensagemErroOpenAI(status, corpo) {
+  const msg = extrairMsgErroApi(corpo);
+  const m = msg.toLowerCase();
+  if (m.includes('pdf') || m.includes('file')) {
+    return 'A OpenAI não conseguiu ler este PDF (senha, corrompido ou formato inválido).';
+  }
+  if (m.includes('insufficient_quota') || m.includes('billing') || m.includes('credit') || status === 402) {
+    return 'Cota OpenAI esgotada ou cobrança pendente.';
+  }
+  if (m.includes('rate') || status === 429) return 'Rate limit da OpenAI. Aguarde um minuto.';
+  if (status === 401 || m.includes('invalid api key') || m.includes('authentication')) {
+    return 'OPENAI_API_KEY inválida ou expirada.';
+  }
+  return msg ? `Falha OpenAI: ${msg.slice(0, 200)}` : 'OpenAI indisponível.';
+}
+
+/** Converte histórico (formato Claude) para Chat Completions da OpenAI, com PDF/imagem. */
+function historicoParaOpenAI(historico) {
+  return historico.map(m => {
+    if (typeof m.content === 'string') return { role: m.role, content: m.content };
+    if (!Array.isArray(m.content)) return { role: m.role, content: String(m.content || '') };
+    const parts = [];
+    for (const b of m.content) {
+      if (b.type === 'text') parts.push({ type: 'text', text: b.text || '' });
+      else if (b.type === 'document' && b.source?.data) {
+        parts.push({
+          type: 'file',
+          file: {
+            filename: b.filename || 'documento.pdf',
+            file_data: `data:application/pdf;base64,${b.source.data}`
+          }
+        });
+      } else if (b.type === 'image' && b.source?.data) {
+        parts.push({
+          type: 'image_url',
+          image_url: { url: `data:${b.source.media_type || 'image/png'};base64,${b.source.data}` }
+        });
+      } else if (b.text) {
+        parts.push({ type: 'text', text: b.text });
+      }
+    }
+    return { role: m.role, content: parts.length ? parts : '' };
+  });
+}
+
+/** Histórico só texto (DeepSeek e similares). */
+function historicoTexto(historico) {
+  return historico.map(m => ({
+    role: m.role,
+    content: typeof m.content === 'string'
+      ? m.content
+      : (Array.isArray(m.content)
+        ? m.content.map(c => c.text || (c.type === 'document' ? '[PDF anexado — conteúdo visual não disponível neste provedor]' : c.type === 'image' ? '[imagem anexada]' : '')).filter(Boolean).join('\n')
+        : String(m.content || ''))
+  }));
+}
+
+async function streamOpenAIChat(res, { system, messages, aviso }) {
+  const resposta = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENAI_KEY}`
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL,
+      max_tokens: 8000,
+      temperature: 0.4,
+      stream: true,
+      messages: [{ role: 'system', content: system }, ...messages]
+    })
+  });
+  if (!resposta.ok) {
+    const erro = await resposta.text();
+    console.error('Erro OpenAI:', resposta.status, erro.slice(0, 800));
+    return { ok: false, status: resposta.status, erro };
+  }
+  if (aviso) res.write(aviso);
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for await (const chunk of resposta.body) {
+    buffer += decoder.decode(chunk, { stream: true });
+    const linhas = buffer.split('\n');
+    buffer = linhas.pop();
+    for (const linha of linhas) {
+      if (!linha.startsWith('data: ')) continue;
+      const bruto = linha.slice(6).trim();
+      if (!bruto || bruto === '[DONE]') continue;
+      try {
+        const ev = JSON.parse(bruto);
+        const delta = ev.choices?.[0]?.delta?.content;
+        if (delta) res.write(delta);
+        if (ev.choices?.[0]?.finish_reason === 'length') {
+          res.write('\n\n⏸ **[Análise extensa — atingi o limite desta resposta. Envie "continue" e prossigo do ponto exato.]**');
+        }
+      } catch { /* linha parcial */ }
+    }
+  }
+  return { ok: true };
+}
+
+async function chamarDeepSeek({ system, messages }) {
+  const resposta = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DEEPSEEK_KEY}` },
+    body: JSON.stringify({
+      model: 'deepseek-chat',
+      max_tokens: 4000,
+      temperature: 0.4,
+      messages: [{ role: 'system', content: system }, ...messages]
+    })
+  });
+  const dados = await resposta.json().catch(() => ({}));
+  if (!resposta.ok) {
+    console.error('Erro DeepSeek:', dados);
+    return { ok: false, erro: dados?.error?.message || 'DeepSeek indisponível.' };
+  }
+  return { ok: true, texto: dados.choices?.[0]?.message?.content?.trim() || '' };
+}
+
 // ---------- ORÁCULO: lista de agentes para o seletor do frontend ----------
 app.get('/api/agentes', (req, res) => res.json({ agentes: listAgents() }));
 
@@ -297,32 +535,38 @@ app.post('/api/chat', limitar, exigirLoginSeHouverContas, async (req, res) => {
       if (!arquivo || !arquivo.data) continue;
       const nome = String(arquivo.name || 'arquivo').slice(0, 120);
       const ext = nome.toLowerCase().split('.').pop();
-      const tamanhoMB = String(arquivo.data).length * 0.75 / 1_048_576;
+      const dataB64 = limparBase64(arquivo.data);
+      const tamanhoMB = dataB64.length * 0.75 / 1_048_576;
+      // PDF até 100MB: Claude via Files API; OpenAI só até ~45MB no fallback
       const teto = ext === 'pdf' ? 100 : (['png','jpg','jpeg','webp','gif'].includes(ext) ? 5 : 15);
       if (tamanhoMB > teto) {
         return res.status(400).json({ erro: `"${nome}" tem ${tamanhoMB.toFixed(1)}MB e excede o limite de ${teto}MB para .${ext}.` });
       }
       const LIMITE_TEXTO = 150_000;
+      const visionOk = Boolean(ANTHROPIC_KEY || OPENAI_KEY);
       try {
-        if (ext === 'pdf' && ANTHROPIC_KEY) {
-          blocosBinarios.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: arquivo.data } });
-        } else if (['png','jpg','jpeg','webp','gif'].includes(ext) && ANTHROPIC_KEY) {
+        if (ext === 'pdf' && visionOk) {
+          if (!pdfValido(dataB64)) {
+            return res.status(400).json({ erro: `"${nome}" não parece um PDF válido (pode estar corrompido ou não ser PDF de verdade).` });
+          }
+          blocosBinarios.push({ type: 'document', filename: nome, source: { type: 'base64', media_type: 'application/pdf', data: dataB64 } });
+        } else if (['png','jpg','jpeg','webp','gif'].includes(ext) && visionOk) {
           const mapa = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', webp:'image/webp', gif:'image/gif' };
-          blocosBinarios.push({ type: 'image', source: { type: 'base64', media_type: mapa[ext], data: arquivo.data } });
+          blocosBinarios.push({ type: 'image', source: { type: 'base64', media_type: mapa[ext], data: dataB64 } });
         } else if (ext === 'docx') {
-          const r = await mammoth.extractRawText({ buffer: Buffer.from(arquivo.data, 'base64') });
+          const r = await mammoth.extractRawText({ buffer: Buffer.from(dataB64, 'base64') });
           let corpo = String(r.value || '').trim().slice(0, LIMITE_TEXTO);
           if (!corpo) return res.status(400).json({ erro: `Não consegui extrair conteúdo de ${nome}.` });
           textosExtraidos.push(`[Documento Word: "${nome}"]\n${corpo}\n[Fim de ${nome}]`);
         } else if (['xlsx','xls','csv'].includes(ext)) {
-          const wb = XLSX.read(Buffer.from(arquivo.data, 'base64'), { type: 'buffer' });
+          const wb = XLSX.read(Buffer.from(dataB64, 'base64'), { type: 'buffer' });
           const partes = wb.SheetNames.slice(0, 15).map(n => '== Aba: ' + n + ' ==\n' + XLSX.utils.sheet_to_csv(wb.Sheets[n]));
           let corpo = partes.join('\n\n').slice(0, LIMITE_TEXTO);
           textosExtraidos.push(`[Planilha (CSV): "${nome}"]\n${corpo}\n[Fim de ${nome}]`);
         } else if (ext === 'txt') {
-          textosExtraidos.push(`[Arquivo de texto: "${nome}"]\n${Buffer.from(arquivo.data, 'base64').toString('utf8').slice(0, LIMITE_TEXTO)}\n[Fim de ${nome}]`);
+          textosExtraidos.push(`[Arquivo de texto: "${nome}"]\n${Buffer.from(dataB64, 'base64').toString('utf8').slice(0, LIMITE_TEXTO)}\n[Fim de ${nome}]`);
         } else if (['pdf','png','jpg','jpeg','webp','gif'].includes(ext)) {
-          return res.status(400).json({ erro: 'PDF e imagens exigem o investigador Claude ativo neste servidor.' });
+          return res.status(400).json({ erro: 'PDF e imagens exigem Claude (ANTHROPIC_API_KEY) ou OpenAI (OPENAI_API_KEY) neste servidor.' });
         } else {
           return res.status(400).json({ erro: `Formato de "${nome}" não suportado. Envie PDF, DOCX, XLSX, XLS, CSV, TXT ou imagem.` });
         }
@@ -337,94 +581,163 @@ app.post('/api/chat', limitar, exigirLoginSeHouverContas, async (req, res) => {
       const instrucaoImagem = blocosBinarios.some(b => b.type === 'image') ? 'Leia integralmente os documentos nas imagens (OCR), transcrevendo os trechos relevantes antes de analisar. ' : '';
       const textoFinal = (textosExtraidos.length ? textosExtraidos.join('\n\n') + '\n\n' : '') + instrucaoImagem + textoBase;
       ultima.content = blocosBinarios.length ? [...blocosBinarios, { type: 'text', text: textoFinal }] : textoFinal;
-        }
+    }
 
-    // Streaming para o cliente: texto puro em chunks
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('X-Accel-Buffering', 'no');
+    const temPdf = blocosBinarios.some(b => b.type === 'document');
+    const systemPrompt = agenteOraculo ? agenteOraculo.system : PROMPT_HOLMES;
+    const falhas = [];
 
-    // ---- Investigador principal: Claude, com busca na web e cache de prompt ----
+    // ---- 1) Claude (principal) ----
     if (ANTHROPIC_KEY) {
-      const resposta = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': ANTHROPIC_KEY,
-          'anthropic-version': '2023-06-01'
-        },
-        body: JSON.stringify({
+      let historicoClaude = historico;
+      let usouFilesApi = false;
+      let prepOk = true;
+      try {
+        if (temPdf) {
+          const prep = await historicoParaClaudeComFiles(historico);
+          historicoClaude = prep.historico;
+          usouFilesApi = prep.usouFile;
+        }
+      } catch (e) {
+        prepOk = false;
+        console.error('Falha Files API Anthropic:', e.message, e.corpo?.slice?.(0, 400));
+        falhas.push(
+          'Falha ao enviar o PDF à Anthropic (Files API): ' +
+          (mensagemErroAnthropic(e.status || 502, e.corpo || e.message))
+        );
+      }
+
+      if (prepOk) {
+        const payload = {
           model: agenteOraculo ? agenteOraculo.model : 'claude-sonnet-4-6',
           max_tokens: 8000,
           stream: true,
-          system: [{ type: 'text', text: agenteOraculo ? agenteOraculo.system : PROMPT_HOLMES, cache_control: { type: 'ephemeral' } }],
-          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
-          messages: historico
-        })
-      });
-
-      if (!resposta.ok) {
-        const erro = await resposta.text();
-        console.error('Erro Anthropic:', erro.slice(0, 500));
-        return res.end('O investigador está indisponível no momento. Tente novamente em instantes.');
-      }
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let avisoBusca = false;
-      for await (const chunk of resposta.body) {
-        buffer += decoder.decode(chunk, { stream: true });
-        const linhas = buffer.split('\n');
-        buffer = linhas.pop();
-        for (const linha of linhas) {
-          if (!linha.startsWith('data: ')) continue;
-          const bruto = linha.slice(6).trim();
-          if (bruto === '[DONE]') continue;
-          try {
-            const ev = JSON.parse(bruto);
-            if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
-              res.write(ev.delta.text);
-            } else if (ev.type === 'content_block_start' && ev.content_block?.type === 'server_tool_use' && !avisoBusca) {
-              avisoBusca = true;
-              res.write('🔎 [consultando fontes na web…]\n\n');
-            } else if (ev.type === 'message_delta' && ev.delta?.stop_reason === 'max_tokens') {
-              res.write('\n\n⏸ **[Análise extensa — atingi o limite desta resposta. Envie "continue" e prossigo do ponto exato.]**');
-            }
-          } catch { /* linha parcial, ignora */ }
+          system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+          messages: historicoClaude
+        };
+        if (!temPdf) {
+          payload.tools = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }];
         }
+
+        const headersClaude = {
+          'Content-Type': 'application/json',
+          'x-api-key': ANTHROPIC_KEY,
+          'anthropic-version': '2023-06-01'
+        };
+        if (usouFilesApi) headersClaude['anthropic-beta'] = ANTHROPIC_FILES_BETA;
+
+        const resposta = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: headersClaude,
+          body: JSON.stringify(payload)
+        });
+
+        if (resposta.ok) {
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-cache');
+          res.setHeader('X-Accel-Buffering', 'no');
+          res.setHeader('X-Holmes-Provedor', 'claude');
+
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let avisoBusca = false;
+          for await (const chunk of resposta.body) {
+            buffer += decoder.decode(chunk, { stream: true });
+            const linhas = buffer.split('\n');
+            buffer = linhas.pop();
+            for (const linha of linhas) {
+              if (!linha.startsWith('data: ')) continue;
+              const bruto = linha.slice(6).trim();
+              if (bruto === '[DONE]') continue;
+              try {
+                const ev = JSON.parse(bruto);
+                if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
+                  res.write(ev.delta.text);
+                } else if (ev.type === 'content_block_start' && ev.content_block?.type === 'server_tool_use' && !avisoBusca) {
+                  avisoBusca = true;
+                  res.write('🔎 [consultando fontes na web…]\n\n');
+                } else if (ev.type === 'message_delta' && ev.delta?.stop_reason === 'max_tokens') {
+                  res.write('\n\n⏸ **[Análise extensa — atingi o limite desta resposta. Envie "continue" e prossigo do ponto exato.]**');
+                } else if (ev.type === 'error') {
+                  console.error('Erro no stream Anthropic:', ev.error?.message);
+                  res.write('\n\n' + mensagemErroAnthropic(502, JSON.stringify(ev)));
+                }
+              } catch { /* linha parcial */ }
+            }
+          }
+          return res.end();
+        }
+
+        const erroClaude = await resposta.text();
+        console.error('Erro Anthropic (vai para fallback):', resposta.status, erroClaude.slice(0, 800));
+        falhas.push(mensagemErroAnthropic(resposta.status, erroClaude));
       }
-      return res.end();
     }
 
-    // ---- Fallback de teste: DeepSeek (sem busca web e sem PDF) ----
-    if (DEEPSEEK_KEY) {
-      const resposta = await fetch('https://api.deepseek.com/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DEEPSEEK_KEY}` },
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          max_tokens: 1200,
-          temperature: 0.4,
-          messages: [{ role: 'system', content: agenteOraculo ? agenteOraculo.system : PROMPT_HOLMES }, ...historico.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : m.content.map(c => c.text || '[documento]').join(' ') }))]
-        })
+    // ---- 2) OpenAI (fallback com PDF nativo; limite ~50MB) ----
+    const pdfMbMax = blocosBinarios
+      .filter(b => b.type === 'document' && b.source?.data)
+      .reduce((m, b) => Math.max(m, b.source.data.length * 0.75 / 1_048_576), 0);
+    if (OPENAI_KEY && pdfMbMax > OPENAI_PDF_MAX_MB) {
+      falhas.push(`PDF com ${pdfMbMax.toFixed(1)}MB ultrapassa o limite da OpenAI (~${OPENAI_PDF_MAX_MB}MB).`);
+    } else if (OPENAI_KEY) {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.setHeader('X-Holmes-Provedor', 'openai');
+      const aviso = falhas.length
+        ? '⚙️ [Claude indisponível — continuando com OpenAI]\n\n'
+        : '';
+      const rOpen = await streamOpenAIChat(res, {
+        system: systemPrompt,
+        messages: historicoParaOpenAI(historico),
+        aviso
       });
-      const dados = await resposta.json();
-      if (!resposta.ok) { console.error('Erro DeepSeek:', dados); return res.end('O investigador está indisponível no momento.'); }
-      return res.end(dados.choices?.[0]?.message?.content?.trim() || '');
+      if (rOpen.ok) return res.end();
+      falhas.push(mensagemErroOpenAI(rOpen.status, rOpen.erro));
     }
 
-    return res.end('Nenhuma chave de IA configurada no servidor.');
+    // ---- 3) DeepSeek (último fallback — só texto) ----
+    if (DEEPSEEK_KEY) {
+      const jaStreaming = res.getHeader('Content-Type');
+      if (!jaStreaming) {
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('X-Accel-Buffering', 'no');
+      }
+      res.setHeader('X-Holmes-Provedor', 'deepseek');
+      if (falhas.length || temPdf) {
+        res.write(temPdf
+          ? '⚙️ [Fallback DeepSeek — PDF não é lido nativamente aqui; analiso com base no texto/contexto disponível]\n\n'
+          : '⚙️ [Fallback DeepSeek]\n\n');
+      }
+      const rDs = await chamarDeepSeek({ system: systemPrompt, messages: historicoTexto(historico) });
+      if (rDs.ok) return res.end(rDs.texto);
+      falhas.push(rDs.erro || 'DeepSeek indisponível.');
+    }
+
+    if (!res.headersSent) {
+      return res.status(502).json({
+        erro: falhas.length
+          ? falhas.join(' → ')
+          : 'Nenhuma chave de IA configurada (ANTHROPIC_API_KEY, OPENAI_API_KEY ou DEEPSEEK_API_KEY).'
+      });
+    }
+    return res.end('\n\n' + (falhas.join(' → ') || 'Nenhum investigador disponível.'));
   } catch (e) {
     console.error(e);
-    try { res.end('\n\n[A investigação foi interrompida por uma falha. Envie novamente.]'); } catch {}
+    try {
+      if (!res.headersSent) return res.status(500).json({ erro: 'A investigação foi interrompida por uma falha. Envie novamente.' });
+      res.end('\n\n[A investigação foi interrompida por uma falha. Envie novamente.]');
+    } catch {}
   }
 });
 
 // ---------- /api/contracheck — DeepSeek, a revisora cega ----------
 app.post('/api/contracheck', limitar, exigirLoginSeHouverContas, async (req, res) => {
   try {
-    // Revisão cruzada exige dois provedores distintos: sem a Anthropic, a DeepSeek estaria revisando a si mesma.
-    if (!DEEPSEEK_KEY || !ANTHROPIC_KEY) return res.json({ disponivel: false });
+    // Revisão cruzada exige DeepSeek + outro provedor (Claude ou OpenAI)
+    if (!DEEPSEEK_KEY || !(ANTHROPIC_KEY || OPENAI_KEY)) return res.json({ disponivel: false });
     const { texto } = req.body;
     if (!texto || typeof texto !== 'string') return res.status(400).json({ erro: 'Texto ausente.' });
 
@@ -521,16 +834,25 @@ app.delete('/api/casos/:id', autenticar, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/saude', (_req, res) => res.json({
-  ok: true,
-  investigador: ANTHROPIC_KEY ? 'claude' : (DEEPSEEK_KEY ? 'deepseek (modo de teste)' : false),
-  revisora: Boolean(ANTHROPIC_KEY && DEEPSEEK_KEY),
-  buscaWeb: Boolean(ANTHROPIC_KEY),
-  pdf: Boolean(ANTHROPIC_KEY),
-  turnstileSiteKey: TURNSTILE_SITE_KEY || null,
-  contas: Boolean(pool),
-  datajud: true,
-  multiAnexos: 5
-}));
+app.get('/api/saude', (_req, res) => {
+  const cadeia = [
+    ANTHROPIC_KEY && 'claude',
+    OPENAI_KEY && 'openai',
+    DEEPSEEK_KEY && 'deepseek'
+  ].filter(Boolean);
+  res.json({
+    ok: true,
+    investigador: cadeia[0] || false,
+    cadeia,
+    openaiModel: OPENAI_KEY ? OPENAI_MODEL : null,
+    revisora: Boolean(DEEPSEEK_KEY && (ANTHROPIC_KEY || OPENAI_KEY)),
+    buscaWeb: Boolean(ANTHROPIC_KEY),
+    pdf: Boolean(ANTHROPIC_KEY || OPENAI_KEY),
+    turnstileSiteKey: TURNSTILE_SITE_KEY || null,
+    contas: Boolean(pool),
+    datajud: true,
+    multiAnexos: 5
+  });
+});
 
 app.listen(PORT, () => console.log(`Agente Holmes investigando na porta ${PORT}`));
